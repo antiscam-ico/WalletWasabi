@@ -9,7 +9,6 @@ using WalletWasabi.Hwi;
 using WalletWasabi.Hwi.Models;
 using WalletWasabi.Hwi.Parsers;
 using WalletWasabi.Hwi.ProcessBridge;
-using WalletWasabi.Microservices;
 using Xunit;
 using WalletWasabi.Helpers;
 
@@ -35,7 +34,7 @@ namespace WalletWasabi.Tests.UnitTests.Hwi
 		[MemberData(nameof(GetDifferentNetworkValues))]
 		public void CanCreate(Network network)
 		{
-			new HwiClient(network);
+			_ = new HwiClient(network);
 		}
 
 		[Fact]
@@ -86,17 +85,17 @@ namespace WalletWasabi.Tests.UnitTests.Hwi
 		[MemberData(nameof(GetHwiClientConfigurationCombinationValues))]
 		public async Task ThrowArgumentExceptionsForWrongDevicePathAsync(HwiClient client)
 		{
-			var wrongDeviePaths = new[] { "", " " };
+			var wrongDeviePaths = new[] { null, "", " " };
 			using var cts = new CancellationTokenSource(ReasonableRequestTimeout);
 			foreach (HardwareWalletModels deviceType in Enum.GetValues(typeof(HardwareWalletModels)).Cast<HardwareWalletModels>())
 			{
 				foreach (var wrongDevicePath in wrongDeviePaths)
 				{
-					await Assert.ThrowsAsync<ArgumentException>(async () => await client.WipeAsync(deviceType, wrongDevicePath, cts.Token));
-					await Assert.ThrowsAsync<ArgumentException>(async () => await client.SetupAsync(deviceType, wrongDevicePath, false, cts.Token));
+					await Assert.ThrowsAnyAsync<ArgumentException>(async () => await client.WipeAsync(deviceType, wrongDevicePath, cts.Token));
+					await Assert.ThrowsAnyAsync<ArgumentException>(async () => await client.SetupAsync(deviceType, wrongDevicePath, false, cts.Token));
 				}
-				await Assert.ThrowsAsync<ArgumentNullException>(async () => await client.WipeAsync(deviceType, null!, cts.Token));
-				await Assert.ThrowsAsync<ArgumentNullException>(async () => await client.SetupAsync(deviceType, null!, false, cts.Token));
+				await Assert.ThrowsAnyAsync<ArgumentException>(async () => await client.WipeAsync(deviceType, null!, cts.Token));
+				await Assert.ThrowsAnyAsync<ArgumentException>(async () => await client.SetupAsync(deviceType, null!, false, cts.Token));
 			}
 		}
 
@@ -123,7 +122,7 @@ namespace WalletWasabi.Tests.UnitTests.Hwi
 		[Fact]
 		public async Task OpenConsoleDoesntThrowAsync()
 		{
-			var pb = new HwiProcessBridge(new ProcessInvoker());
+			HwiProcessBridge pb = new();
 
 			using var cts = new CancellationTokenSource(ReasonableRequestTimeout);
 			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -158,8 +157,8 @@ namespace WalletWasabi.Tests.UnitTests.Hwi
 		[InlineData("1.1-rc1\n", false)]
 		public void TryParseVersionTests(string input, bool isParsable)
 		{
-			Version expectedVersion = new Version(1, 1, 2);
-			Assert.Equal(isParsable, HwiParser.TryParseVersion(input, out Version actualVersion));
+			Version expectedVersion = new(1, 1, 2);
+			Assert.Equal(isParsable, HwiParser.TryParseVersion(input, out Version? actualVersion));
 
 			if (isParsable)
 			{
@@ -209,7 +208,7 @@ namespace WalletWasabi.Tests.UnitTests.Hwi
 		{
 			using var cts = new CancellationTokenSource(ReasonableRequestTimeout);
 
-			var pb = new HwiProcessBridge(new ProcessInvoker());
+			HwiProcessBridge pb = new();
 
 			// Start HWI with "version" argument and test that we get non-empty response.
 			(string response, int exitCode) result = await pb.SendCommandAsync("--version", openConsole: false, cts.Token);
@@ -228,7 +227,7 @@ namespace WalletWasabi.Tests.UnitTests.Hwi
 		{
 			using var cts = new CancellationTokenSource(ReasonableRequestTimeout);
 
-			var processBridge = new HwiProcessBridge(new ProcessInvoker());
+			HwiProcessBridge processBridge = new();
 			(string response, int exitCode) result = await processBridge.SendCommandAsync("--help", openConsole: false, cts.Token);
 
 			Assert.Equal(0, result.exitCode);

@@ -1,0 +1,84 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:c="using:WalletWasabi.Fluent.Controls"
+             xmlns:receive="clr-namespace:WalletWasabi.Fluent.ViewModels.Wallets.Receive"
+             mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
+             x:DataType="receive:ReceiveAddressesViewModel"
+             x:CompileBindings="True"
+             x:Class="WalletWasabi.Fluent.Views.Wallets.Receive.ReceiveAddressesView">
+  <c:ContentArea Title="Unused Receive Addresses"
+                 EnableCancel="{Binding EnableCancel}"
+                 EnableBack="{Binding EnableBack}"
+                 ScrollViewer.VerticalScrollBarVisibility="Disabled">
+    <DataGrid Items="{Binding Addresses}"
+              CanUserSortColumns="True">
+      <DataGrid.Styles>
+        <Style Selector="c|AnimatedButton.addressActionButton">
+          <Setter Property="DockPanel.Dock" Value="Right"/>
+          <Setter Property="Margin" Value="5 0 0 0"/>
+        </Style>
+        <Style Selector="c|AnimatedButton /template/ PathIcon">
+          <Setter Property="Height" Value="15"/>
+          <Setter Property="Foreground" Value="{DynamicResource SystemAccentColor}"/>
+        </Style>
+        <Style Selector="Button.addressActionButton">
+          <Setter Property="DockPanel.Dock" Value="Right"/>
+          <Setter Property="Margin" Value="5 0 0 0"/>
+        </Style>
+        <Style Selector="PathIcon.addressActionIcon">
+          <Setter Property="Height" Value="15"/>
+          <Setter Property="Foreground" Value="{DynamicResource SystemAccentColor}"/>
+        </Style>
+      </DataGrid.Styles>
+
+      <DataGrid.Columns>
+        <DataGridTemplateColumn Header="Labels"
+                                Width="*"
+                                CanUserSort="True"
+                                SortMemberPath="Label">
+          <DataGridTemplateColumn.CellTemplate>
+            <DataTemplate>
+              <DockPanel LastChildFill="True" Margin="10 0" x:DataType="receive:AddressViewModel">
+                <Button Classes="plain addressActionButton" ToolTip.Tip="Edit" DockPanel.Dock="Right" Command="{Binding EditLabelCommand}">
+                  <PathIcon Data="{StaticResource edit_regular}" Classes="addressActionIcon" />
+                </Button>
+                <c:TagsBox Padding="0" IsReadOnly="True" Items="{Binding Label}" VerticalAlignment="Center" />
+              </DockPanel>
+            </DataTemplate>
+          </DataGridTemplateColumn.CellTemplate>
+        </DataGridTemplateColumn>
+
+        <DataGridTemplateColumn Header="Address"
+                                Width="2*"
+                                CanUserSort="True"
+                                SortMemberPath="Address">
+          <DataGridTemplateColumn.CellTemplate>
+            <DataTemplate>
+              <DockPanel LastChildFill="True" Margin="10 0" x:DataType="receive:AddressViewModel">
+                <Button Classes="plain addressActionButton" Command="{Binding HideAddressCommand}"
+                        DockPanel.Dock="Right"
+                        ToolTip.Tip="Hide address">
+                  <PathIcon Data="{StaticResource dismiss_light}" Classes=" addressActionIcon"/>
+                </Button>
+                <c:AnimatedButton Classes="addressActionButton" DockPanel.Dock="Right"
+                                  ToolTip.Tip="Copy"
+                                  Command="{Binding CopyAddressCommand}"
+                                  NormalIcon="{StaticResource copy_regular}"
+                                  ClickIcon="{StaticResource copy_confirmed}"
+                                  InitialOpacity="1.0"/>
+                <Button Classes="plain addressActionButton" Command="{Binding NavigateCommand}"
+                        DockPanel.Dock="Right"
+                        ToolTip.Tip="QR Code">
+                  <PathIcon Data="{StaticResource qr_code_regular}" Classes=" addressActionIcon"/>
+                </Button>
+                <TextBox Classes="selectableTextBlock" Text="{Binding Address}" VerticalAlignment="Center" />
+              </DockPanel>
+            </DataTemplate>
+          </DataGridTemplateColumn.CellTemplate>
+        </DataGridTemplateColumn>
+      </DataGrid.Columns>
+    </DataGrid>
+  </c:ContentArea>
+</UserControl>

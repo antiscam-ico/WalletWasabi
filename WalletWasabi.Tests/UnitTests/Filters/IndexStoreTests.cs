@@ -9,6 +9,7 @@ using WalletWasabi.Backend.Models;
 using WalletWasabi.Blockchain.BlockFilters;
 using WalletWasabi.Blockchain.Blocks;
 using WalletWasabi.Stores;
+using WalletWasabi.Tests.Helpers;
 using Xunit;
 
 namespace WalletWasabi.Tests.UnitTests.Filters
@@ -25,7 +26,7 @@ namespace WalletWasabi.Tests.UnitTests.Filters
 			{
 				Directory.Delete(dir, true);
 			}
-			var indexStore = new IndexStore(dir, network, new SmartHeaderChain());
+			await using var indexStore = new IndexStore(dir, network, new SmartHeaderChain());
 			await indexStore.InitializeAsync();
 		}
 
@@ -37,7 +38,7 @@ namespace WalletWasabi.Tests.UnitTests.Filters
 			var network = Network.Main;
 			var headersChain = new SmartHeaderChain();
 
-			var indexStore = new IndexStore(dir, network, headersChain);
+			await using var indexStore = new IndexStore(dir, network, headersChain);
 			var dummyFilter = GolombRiceFilter.Parse("00");
 
 			static DateTimeOffset MinutesAgo(int mins) => DateTimeOffset.UtcNow.Subtract(TimeSpan.FromMinutes(mins));
@@ -64,7 +65,7 @@ namespace WalletWasabi.Tests.UnitTests.Filters
 
 			var network = Network.Main;
 			var headersChain = new SmartHeaderChain();
-			var indexStore = new IndexStore(dir, network, headersChain);
+			await using var indexStore = new IndexStore(dir, network, headersChain);
 
 			var dummyFilter = GolombRiceFilter.Parse("00");
 
@@ -94,7 +95,7 @@ namespace WalletWasabi.Tests.UnitTests.Filters
 
 			var network = Network.Main;
 			var headersChain = new SmartHeaderChain();
-			var indexStore = new IndexStore(dir, network, headersChain);
+			await using var indexStore = new IndexStore(dir, network, headersChain);
 
 			var dummyFilter = GolombRiceFilter.Parse("00");
 
@@ -127,7 +128,7 @@ namespace WalletWasabi.Tests.UnitTests.Filters
 
 			var network = Network.Main;
 			var headersChain = new SmartHeaderChain();
-			var indexStore = new IndexStore(dir, network, headersChain);
+			await using var indexStore = new IndexStore(dir, network, headersChain);
 
 			var dummyFilter = GolombRiceFilter.Parse("00");
 

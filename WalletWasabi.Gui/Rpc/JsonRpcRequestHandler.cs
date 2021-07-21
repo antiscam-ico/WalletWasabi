@@ -17,7 +17,7 @@ namespace WalletWasabi.Gui.Rpc
 	/// </summary>
 	public class JsonRpcRequestHandler<TService>
 	{
-		private static readonly JsonSerializerSettings DefaultSettings = new JsonSerializerSettings
+		private static readonly JsonSerializerSettings DefaultSettings = new()
 		{
 			NullValueHandling = NullValueHandling.Ignore,
 			ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
@@ -113,7 +113,7 @@ namespace WalletWasabi.Gui.Rpc
 						$"{methodParameters.Count} parameters were expected but {parameters.Count} were received.", jsonRpcRequest.Id);
 				}
 
-				var missingParameters = methodParameters.Count() - parameters.Count();
+				var missingParameters = methodParameters.Count - parameters.Count;
 				parameters.AddRange(methodParameters.TakeLast(missingParameters).Select(x => x.defaultValue));
 				var result = prodecureMetadata.MethodInfo.Invoke(Service, parameters.ToArray());
 

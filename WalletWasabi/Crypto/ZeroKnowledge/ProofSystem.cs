@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using System.Collections.Generic;
 using NBitcoin.Secp256k1;
@@ -8,7 +9,7 @@ using WalletWasabi.Helpers;
 
 namespace WalletWasabi.Crypto.ZeroKnowledge
 {
-	public partial class ProofSystem
+	internal partial class ProofSystem
 	{
 		private static GroupElement O = GroupElement.Infinity;
 
@@ -86,11 +87,11 @@ namespace WalletWasabi.Crypto.ZeroKnowledge
 			return Enumerable.Zip(statements, proofs, (s, p) => s.CheckVerificationEquation(p.PublicNonces, challenge, p.Responses)).All(x => x);
 		}
 
-		public static Knowledge IssuerParameters(MAC mac, GroupElement ma, CoordinatorSecretKey sk)
-			=> new Knowledge(IssuerParametersStmt(sk.ComputeCoordinatorParameters(), mac, ma), new ScalarVector(sk.W, sk.Wp, sk.X0, sk.X1, sk.Ya));
+		public static Knowledge IssuerParametersKnowledge(MAC mac, GroupElement ma, CredentialIssuerSecretKey sk)
+			=> new(IssuerParametersStatement(sk.ComputeCredentialIssuerParameters(), mac, ma), new ScalarVector(sk.W, sk.Wp, sk.X0, sk.X1, sk.Ya));
 
-		public static Statement IssuerParametersStmt(CoordinatorParameters iparams, MAC mac, GroupElement ma)
-			=> new Statement(new GroupElement[,]
+		public static Statement IssuerParametersStatement(CredentialIssuerParameters iparams, MAC mac, GroupElement ma)
+			=> new(new GroupElement[,]
 			{
 				// public                                             Witness terms:
 				// point                     w,             wp,             x0,             x1,             ya
@@ -99,42 +100,50 @@ namespace WalletWasabi.Crypto.ZeroKnowledge
 				{ iparams.Cw,                Generators.Gw, Generators.Gwp, O,              O,              O },
 			});
 
-		public static Knowledge ShowCredential(CredentialPresentation presentation, Scalar z, Credential credential, CoordinatorParameters iparams)
-			=> new Knowledge(
-				ShowCredentialStmt(presentation, z * iparams.I, iparams),
-				new ScalarVector(z, (credential.Mac.T * z).Negate(), credential.Mac.T, credential.Amount, credential.Randomness));
+		public static Knowledge ShowCredentialKnowledge(CredentialPresentation presentation, Scalar z, Credential credential, CredentialIssuerParameters iparams)
+			=> new(
+				ShowCredentialStatement(presentation, z * iparams.I, iparams),
+				new ScalarVector(z, (credential.Mac.T * z).Negate(), credential.Mac.T, new Scalar((ulong)credential.Value), credential.Randomness));
 
-		public static Statement ShowCredentialStmt(CredentialPresentation c, GroupElement Z, CoordinatorParameters iparams)
-			=> new Statement(new GroupElement[,]
+		public static Statement ShowCredentialStatement(CredentialPresentation c, GroupElement z, CredentialIssuerParameters iparams)
+			=> new(new GroupElement[,]
 			{
 				// public                     Witness terms:
 				// point      z               z0              t               a               r
-				{ Z,          iparams.I,      O,              O,              O,              O },
+				{ z,          iparams.I,      O,              O,              O,              O },
 				{ c.Cx1,      Generators.Gx1, Generators.Gx0, c.Cx0,          O,              O },
 				{ c.Ca,       Generators.Ga,  O,              O,              Generators.Gg,  Generators.Gh },
 				{ c.S,        O,              O,              O,              O,              Generators.Gs }
 			});
 
-		public static Knowledge BalanceProof(Scalar zSum, Scalar rDeltaSum)
-			=> new Knowledge(BalanceProofStmt(zSum * Generators.Ga + rDeltaSum * Generators.Gh), new ScalarVector(zSum, rDeltaSum));
+		public static Knowledge BalanceProofKnowledge(Scalar zSum, Scalar rDeltaSum)
+			=> new(BalanceProofStatement(zSum * Generators.Ga + rDeltaSum * Generators.Gh), new ScalarVector(zSum, rDeltaSum));
 
 		// Balance commitment must be a commitment to 0, with randomness in Gh and
 		// additional randomness from attribute randomization in Show protocol,
 		// using generator Ga. Witness terms: (\sum z, \sum r_i - r'_i)
-		public static Statement BalanceProofStmt(GroupElement balanceCommitment)
-			=> new Statement(balanceCommitment, Generators.Ga, Generators.Gh);
+		public static Statement BalanceProofStatement(GroupElement balanceCommitment)
+			=> new(balanceCommitment, Generators.Ga, Generators.Gh);
 
 		// overload for bootstrap credential request proofs.
 		// this is just a range proof with width=0
 		// equivalent to proof of representation w/ Gh
-		public static Knowledge ZeroProof(GroupElement ma, Scalar r)
-			=> new Knowledge(ZeroProofStmt(ma), new ScalarVector(r));
+		public static Knowledge ZeroProofKnowledge(GroupElement ma, Scalar r)
+			=> new(ZeroProofStatement(ma), new ScalarVector(r));
+
+		public static GroupElement PedersenCommitment(Scalar s, Scalar b)
+		{
+			var gej = ECMultContext.Instance.MultBatch(
+									   new[] { s, b },
+									   new[] { Generators.Gg.Ge, Generators.Gh.Ge });
+			return new GroupElement(gej);
+		}
 
 		// TODO swap return value order, remove GroupElement argument
 		// expect nonce provider instead of WasabiRandom?
-		public static (Knowledge knowledge, IEnumerable<GroupElement> bitCommitments) RangeProof(Scalar a, Scalar r, int width, WasabiRandom rnd)
+		public static (Knowledge knowledge, IEnumerable<GroupElement> bitCommitments) RangeProofKnowledge(Scalar a, Scalar r, int width, WasabiRandom rnd)
 		{
-			var ma = a * Generators.Gg + r * Generators.Gh;
+			var ma = PedersenCommitment(a, r);
 			var bits = Enumerable.Range(0, width).Select(i => a.GetBits(i, 1) == 0 ? Scalar.Zero : Scalar.One);
 
 			// Generate bit commitments.
@@ -145,10 +154,11 @@ namespace WalletWasabi.Crypto.ZeroKnowledge
 			//   randomly generated credentials in memory or persistent storage, and
 			//   re-request by loading and re-sending.
 			// - long term fee credentials will definitely need deterministic
-			//   randomness because the server can only give idempotent responses with
-			//   its own records.
+			//   randomness because otherwise recovery of credentials from
+			//   seed would not result in idempotent responses if the client
+			//   loses state
 			var randomness = Enumerable.Repeat(0, width).Select(_ => rnd.GetScalar()).ToArray();
-			var bitCommitments = bits.Zip(randomness, (b, r) => b * Generators.Gg + r * Generators.Gh);
+			var bitCommitments = bits.Zip(randomness, (b, r) => PedersenCommitment(b, r)).ToArray();
 
 			var columns = width * 3 + 1; // three witness terms per bit and one for the commitment
 			static int BitColumn(int i) => 3 * i + 1;
@@ -167,19 +177,20 @@ namespace WalletWasabi.Crypto.ZeroKnowledge
 				witness[ProductColumn(i)] = r_i * b_i;
 			}
 
-			return (new Knowledge(RangeProofStmt(ma, bitCommitments), new ScalarVector(witness)), bitCommitments);
+			return (new Knowledge(RangeProofStatement(ma, bitCommitments, width), new ScalarVector(witness)), bitCommitments);
 		}
 
 		// overload for bootstrap credential request proofs.
 		// this is just a range proof with width=0
 		// equivalent to new Statement(ma, Generators.Gh)
-		public static Statement ZeroProofStmt(GroupElement ma)
-			=> RangeProofStmt(ma, new GroupElement[0]);
+		public static Statement ZeroProofStatement(GroupElement ma)
+			=> RangeProofStatement(ma, Array.Empty<GroupElement>(), 0);
 
-		public static Statement RangeProofStmt(GroupElement ma, IEnumerable<GroupElement> bitCommitments)
+		public static Statement RangeProofStatement(GroupElement ma, IEnumerable<GroupElement> bitCommitments, int width)
 		{
-			var width = bitCommitments.Count(); // can be 0
-			Guard.InRangeAndNotNull(nameof(width), width, 0, Constants.RangeProofWidth);
+			Guard.InRangeAndNotNull(nameof(width), width, 0, 255);
+			var b = bitCommitments.ToArray();
+			Guard.Equals(b.Length, width);
 
 			var rows = width * 2 + 1; // two equations per bit, and one for the sum
 			var columns = width * 3 + 1 + 1; // three witness components per bit and one for the Ma randomness, plus one for the public inputs
@@ -193,7 +204,9 @@ namespace WalletWasabi.Crypto.ZeroKnowledge
 			// Ma, proven by showing that the public input is a commitment to 0 (only
 			// Gh term required to represent it). The per-bit witness terms of this
 			// equation are added in the loop below.
-			var bitsTotal = bitCommitments.Select((B, i) => Scalar.Zero.CAddBit((uint)i, 1) * B).Sum();
+			var powersOfTwo = Generators.ScalarPowersOfTwo.AsSpan(0, width);
+			var bitsTotal = new GroupElement(ECMultContext.Instance.MultBatch(powersOfTwo, b.Select(x => x.Ge).ToArray()));
+
 			equations[0, 0] = ma - bitsTotal;
 			equations[0, 1] = Generators.Gh; // first witness term is r in Ma = a*Gg + r*Gh
 
@@ -210,15 +223,15 @@ namespace WalletWasabi.Crypto.ZeroKnowledge
 			static int BitSquaredRow(int i) => BitRepresentationRow(i) + 1; // row for [ b*(B_i-Gg) - rb*Gh <=> b = b*b ] proof
 
 			// For each bit, add two equations and one term to the first equation.
-			var B = bitCommitments.ToArray();
-			for (int i = 0; i < bitCommitments.Count(); i++)
+			var negatedGh = Generators.Gh.Negate();
+			for (int i = 0; i < width; i++)
 			{
 				// Add [ -r_i * 2^i * Gh ] term to first equation.
-				equations[0, RndColumn(i)] = Scalar.Zero.CAddBit((uint)i, 1) * Generators.Gh.Negate();
+				equations[0, RndColumn(i)] = Generators.NegatedGhPowersOfTwo[i];
 
 				// Add equation proving B is a Pedersen commitment to b:
 				//   [ B = b*Gg + r*Gh ]
-				equations[BitRepresentationRow(i), 0] = B[i];
+				equations[BitRepresentationRow(i), 0] = b[i];
 				equations[BitRepresentationRow(i), BitColumn(i)] = Generators.Gg;
 				equations[BitRepresentationRow(i), RndColumn(i)] = Generators.Gh;
 
@@ -234,8 +247,8 @@ namespace WalletWasabi.Crypto.ZeroKnowledge
 				//
 				// in the verification equation we require that the following terms
 				// cancel out (public input point is O):
-				equations[BitSquaredRow(i), BitColumn(i)] = B[i] - Generators.Gg;
-				equations[BitSquaredRow(i), ProductColumn(i)] = Generators.Gh.Negate();
+				equations[BitSquaredRow(i), BitColumn(i)] = b[i] - Generators.Gg;
+				equations[BitSquaredRow(i), ProductColumn(i)] = negatedGh;
 			}
 
 			return new Statement(equations);

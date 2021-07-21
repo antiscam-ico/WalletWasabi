@@ -15,27 +15,27 @@ namespace WalletWasabi.Fluent.Helpers
 			Default = defaultValue;
 		}
 
-		public object Default { get; set; }
+		public object? Default { get; set; }
 
-		public object Osx { get; set; }
+		public object? Osx { get; set; }
 
-		public object Linux { get; set; }
+		public object? Linux { get; set; }
 
-		public object Windows { get; set; }
+		public object? Windows { get; set; }
 
-		public override object ProvideValue(IServiceProvider serviceProvider)
+		public override object? ProvideValue(IServiceProvider serviceProvider)
 		{
 			var result = Default;
 
-			if (Osx != null && RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+			if (Osx is not null && RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
 			{
 				result = Osx;
 			}
-			else if (Linux != null && RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+			else if (Linux is not null && RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
 			{
 				result = Linux;
 			}
-			else if (Windows != null && RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+			else if (Windows is not null && RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
 			{
 				result = Windows;
 			}

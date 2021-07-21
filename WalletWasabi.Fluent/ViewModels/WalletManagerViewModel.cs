@@ -2,36 +2,59 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Threading.Tasks;
-using Avalonia.Threading;
 using DynamicData;
+using DynamicData.Binding;
 using ReactiveUI;
-using WalletWasabi.Gui;
-using WalletWasabi.Gui.ViewModels;
+using WalletWasabi.Blockchain.TransactionProcessing;
+using WalletWasabi.Fluent.Helpers;
+using WalletWasabi.Fluent.ViewModels.NavBar;
+using WalletWasabi.Fluent.ViewModels.Wallets;
+using WalletWasabi.Logging;
 using WalletWasabi.Wallets;
 
 namespace WalletWasabi.Fluent.ViewModels
 {
-	public class WalletManagerViewModel : ViewModelBase
+	public partial class WalletManagerViewModel : ViewModelBase
 	{
-		private WalletViewModelBase _selectedItem;
-		private ObservableCollection<WalletViewModelBase> _items;
 		private readonly Dictionary<Wallet, WalletViewModelBase> _walletDictionary;
-		private readonly IScreen _screen;
-		private bool _anyWalletStarted;
+		private readonly ReadOnlyObservableCollection<NavBarItemViewModel> _items;
+		private NavBarItemViewModel? _currentSelection;
+		[AutoNotify] private WalletViewModelBase? _selectedWallet;
+		[AutoNotify(SetterModifier = AccessModifier.Private)] private bool _isLoadingWallet;
+		[AutoNotify] private bool _loggedInAndSelectedAlwaysFirst;
+		[AutoNotify] private ObservableCollection<WalletViewModelBase> _wallets;
+		[AutoNotify] private bool _anyWalletStarted;
 
-		public WalletManagerViewModel(IScreen screen, WalletManager walletManager, UiConfig uiConfig)
+		public WalletManagerViewModel()
 		{
-			Model = walletManager;
 			_walletDictionary = new Dictionary<Wallet, WalletViewModelBase>();
-			_items = new ObservableCollection<WalletViewModelBase>();
-			_screen = screen;
+			_wallets = new ObservableCollection<WalletViewModelBase>();
+			_loggedInAndSelectedAlwaysFirst = true;
+
+			static Func<WalletViewModelBase, bool> SelectedWalletFilter(WalletViewModelBase? selected)
+			{
+				return item => selected is null || item != selected;
+			}
+
+			var selectedWalletFilter = this.WhenValueChanged(t => t.SelectedWallet).Select(SelectedWalletFilter);
+
+			_wallets
+				.ToObservableChangeSet()
+				.Filter(selectedWalletFilter)
+				.Sort(SortExpressionComparer<WalletViewModelBase>.Descending(i => i.WalletState).ThenByDescending(i => i.IsLoggedIn).ThenByAscending(i => i.Title))
+				.Transform(x => x as NavBarItemViewModel)
+				.ObserveOn(RxApp.MainThreadScheduler)
+				.Bind(out _items)
+				.AsObservableList();
 
 			Observable
-				.FromEventPattern<WalletState>(walletManager, nameof(WalletManager.WalletStateChanged))
+				.FromEventPattern<WalletState>(Services.WalletManager, nameof(WalletWasabi.Wallets.WalletManager.WalletStateChanged))
 				.ObserveOn(RxApp.MainThreadScheduler)
-				.Subscribe(x =>
+				.Subscribe(
+					x =>
 				{
 					var wallet = x.Sender as Wallet;
 
@@ -41,107 +64,180 @@ namespace WalletWasabi.Fluent.ViewModels
 						{
 							RemoveWallet(_walletDictionary[wallet]);
 						}
-						else if (_walletDictionary[wallet] is ClosedWalletViewModel cwvm && wallet.State == WalletState.Started)
+						else if (_walletDictionary[wallet] is ClosedWalletViewModel { IsLoggedIn: true } cwvm && wallet.State == WalletState.Started)
 						{
-							OpenClosedWallet(walletManager, uiConfig, cwvm);
+							OpenClosedWallet(cwvm);
 						}
 					}
 
-					AnyWalletStarted = Items.OfType<WalletViewModelBase>().Any(x => x.WalletState == WalletState.Started);
+					AnyWalletStarted = Items.OfType<WalletViewModelBase>().Any(y => y.WalletState == WalletState.Started);
 				});
 
 			Observable
-				.FromEventPattern<Wallet>(walletManager, nameof(WalletManager.WalletAdded))
+				.FromEventPattern<Wallet>(Services.WalletManager, nameof(WalletWasabi.Wallets.WalletManager.WalletAdded))
 				.Select(x => x.EventArgs)
-				.Where(x => x is { })
 				.ObserveOn(RxApp.MainThreadScheduler)
-				.Subscribe(wallet =>
+				.Subscribe(
+					wallet =>
 				{
 					WalletViewModelBase vm = (wallet.State <= WalletState.Starting)
-						? ClosedWalletViewModel.Create(screen, walletManager, wallet)
-						: WalletViewModel.Create(screen, uiConfig, wallet);
+						? ClosedWalletViewModel.Create(this, wallet)
+						: WalletViewModel.Create(wallet);
 
 					InsertWallet(vm);
 				});
 
-			Dispatcher.UIThread.Post(() => LoadWallets(walletManager));
+			Observable
+				.FromEventPattern<ProcessedResult>(Services.WalletManager, nameof(Services.WalletManager.WalletRelevantTransactionProcessed))
+				.ObserveOn(RxApp.MainThreadScheduler)
+				.Subscribe(async arg =>
+				{
+					var (sender, e) = arg;
+
+					if (Services.UiConfig.PrivacyMode || !e.IsNews || sender is not Wallet { IsLoggedIn: true, State: WalletState.Started } wallet)
+					{
+						return;
+					}
+
+					if (_walletDictionary.TryGetValue(wallet, out var walletViewModel) && walletViewModel is WalletViewModel wvm)
+					{
+						NotificationHelpers.Show(e, onClick: () => wvm.NavigateAndHighlight(e.Transaction.GetHash()));
+
+						if (wvm.IsSelected && (e.NewlyReceivedCoins.Any() || e.NewlyConfirmedReceivedCoins.Any()))
+						{
+							await Task.Delay(200);
+							wvm.History.SelectTransaction(e.Transaction.GetHash());
+						}
+					}
+				});
+
+			RxApp.MainThreadScheduler.Schedule(() => EnumerateWallets());
 		}
 
-		public WalletManager Model { get; }
+		public ReadOnlyObservableCollection<NavBarItemViewModel> Items => _items;
 
-		public WalletViewModelBase SelectedItem
+		public WalletViewModel GetWalletViewModel(Wallet wallet)
 		{
-			get => _selectedItem;
-			set => this.RaiseAndSetIfChanged(ref _selectedItem, value);
-		}
+			WalletViewModel? result = null;
 
-		public ObservableCollection<WalletViewModelBase> Items
-		{
-			get => _items;
-			set => this.RaiseAndSetIfChanged(ref _items, value);
-		}
-
-		public bool AnyWalletStarted
-		{
-			get => _anyWalletStarted;
-			set => this.RaiseAndSetIfChanged(ref _anyWalletStarted, value);
-		}
-
-		private void OpenClosedWallet(WalletManager walletManager, UiConfig uiConfig, ClosedWalletViewModel closedWalletViewModel)
-		{
-			var select = SelectedItem == closedWalletViewModel;
-
-			RemoveWallet(closedWalletViewModel);
-
-			var walletViewModel = OpenWallet(walletManager, uiConfig, closedWalletViewModel.Wallet);
-
-			if (select)
+			if (_walletDictionary.ContainsKey(wallet))
 			{
-				SelectedItem = walletViewModel;
+				result = _walletDictionary[wallet] as WalletViewModel;
+			}
+
+			if (result is { })
+			{
+				return result;
+			}
+
+			throw new Exception("Wallet not found, invalid api usage");
+		}
+
+		public async Task LoadWalletAsync(ClosedWalletViewModel closedWalletViewModel)
+		{
+			var wallet = closedWalletViewModel.Wallet;
+
+			if (wallet.State != WalletState.Uninitialized)
+			{
+				throw new Exception("Wallet is already being logged in.");
+			}
+
+			try
+			{
+				await Task.Run(async () => await Services.WalletManager.StartWalletAsync(wallet));
+			}
+			catch (OperationCanceledException ex)
+			{
+				Logger.LogTrace(ex);
+			}
+			catch (Exception ex)
+			{
+				Logger.LogError(ex);
 			}
 		}
 
-		private WalletViewModelBase OpenWallet(WalletManager walletManager, UiConfig uiConfig, Wallet wallet)
+		private void OpenClosedWallet(ClosedWalletViewModel closedWalletViewModel)
 		{
-			if (_items.OfType<WalletViewModel>().Any(x => x.Title == wallet.WalletName))
+			IsLoadingWallet = true;
+
+			RemoveWallet(closedWalletViewModel);
+
+			var walletViewModelItem = OpenWallet(closedWalletViewModel.Wallet);
+
+			if (_currentSelection == closedWalletViewModel)
+			{
+				SelectedWallet = walletViewModelItem;
+			}
+
+			IsLoadingWallet = false;
+		}
+
+		private WalletViewModel OpenWallet(Wallet wallet)
+		{
+			if (_wallets.Any(x => x.Title == wallet.WalletName))
 			{
 				throw new Exception("Wallet already opened.");
 			}
 
-			var walletViewModel = WalletViewModel.Create(_screen, uiConfig, wallet);
+			var walletViewModel = WalletViewModel.Create(wallet);
 
 			InsertWallet(walletViewModel);
-
-			if (!walletManager.AnyWallet(x => x.State >= WalletState.Started && x != walletViewModel.Wallet))
-			{
-				walletViewModel.OpenWalletTabs();
-			}
 
 			walletViewModel.IsExpanded = true;
 
 			return walletViewModel;
 		}
 
-		private void InsertWallet(WalletViewModelBase walletVM)
+		private void InsertWallet(WalletViewModelBase wallet)
 		{
-			Items.InsertSorted(walletVM);
-			_walletDictionary.Add(walletVM.Wallet, walletVM);
+			_wallets.InsertSorted(wallet);
+			_walletDictionary.Add(wallet.Wallet, wallet);
 		}
 
-		private void RemoveWallet(WalletViewModelBase walletVM)
+		private void RemoveWallet(WalletViewModelBase walletViewModel)
 		{
-			walletVM.Dispose();
-
-			_items.Remove(walletVM);
-			_walletDictionary.Remove(walletVM.Wallet);
+			_wallets.Remove(walletViewModel);
+			_walletDictionary.Remove(walletViewModel.Wallet);
 		}
 
-		private void LoadWallets(WalletManager walletManager)
+		private void EnumerateWallets()
 		{
-			foreach (var wallet in walletManager.GetWallets())
+			foreach (var wallet in Services.WalletManager.GetWallets())
 			{
-				InsertWallet(ClosedWalletViewModel.Create(_screen, walletManager, wallet));
+				InsertWallet(ClosedWalletViewModel.Create(this, wallet));
 			}
+		}
+
+		public NavBarItemViewModel? SelectionChanged(NavBarItemViewModel item)
+		{
+			if (item.SelectionMode == NavBarItemSelectionMode.Selected)
+			{
+				_currentSelection = item;
+			}
+
+			if (IsLoadingWallet || SelectedWallet == item)
+			{
+				return default;
+			}
+
+			var result = default(NavBarItemViewModel);
+
+			if (SelectedWallet is { IsLoggedIn: true } && (item is WalletViewModelBase && SelectedWallet != item))
+			{
+				if (/*item is not WalletActionViewModel &&*/ SelectedWallet != item)
+				{
+					SelectedWallet = null;
+					result = item;
+				}
+			}
+
+			if (item is WalletViewModel { IsLoggedIn: true } walletViewModelItem)
+			{
+				SelectedWallet = walletViewModelItem;
+				result = item;
+			}
+
+			return result;
 		}
 	}
 }

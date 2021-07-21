@@ -1,10 +1,23 @@
 <Project Sdk="Microsoft.NET.Sdk">
-	<PropertyGroup>
+
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+		<OutputType>Exe</OutputType>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
 		<OutputType>WinExe</OutputType>
-		<TargetFramework>netcoreapp3.1</TargetFramework>
-		<Nullable>enable</Nullable>
+	</PropertyGroup>
+
+	<PropertyGroup>
+		<TargetFramework>net5.0</TargetFramework>
+		<AnalysisLevel>latest</AnalysisLevel>
 		<LangVersion>latest</LangVersion>
-		<NoWarn>1701;1702;1705;1591;1573;CA1031</NoWarn>
+		<NoWarn>1701;1702;1705;1591;1573;CA1031;CA1822</NoWarn>
+		<Nullable>enable</Nullable>
+		<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+		<DisableImplicitNuGetFallbackFolder>true</DisableImplicitNuGetFallbackFolder>
+		<RuntimeIdentifiers>win7-x64;linux-x64;osx-x64</RuntimeIdentifiers>
+		<PathMap>$(MSBuildProjectDirectory)\=WalletWasabi.Fluent.Desktop</PathMap>
 	</PropertyGroup>
 
 	<PropertyGroup>
@@ -31,21 +44,20 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<Compile Update="**\*.xaml.cs">
-			<DependentUpon>%(Filename)</DependentUpon>
-		</Compile>
-		<AvaloniaResource Include="**\*.xaml">
-			<SubType>Designer</SubType>
-		</AvaloniaResource>
 		<AvaloniaResource Include="Assets\**" />
 	</ItemGroup>
 	<ItemGroup>
-		<PackageReference Include="Avalonia.Desktop" Version="0.10.999-cibuild0011763-beta" />
-		<PackageReference Include="Avalonia.ReactiveUI" Version="0.10.999-cibuild0011763-beta" />
+		<PackageReference Include="Avalonia" Version="0.10.999-cibuild0014678-beta" />
+		<PackageReference Include="Avalonia.Desktop" Version="0.10.999-cibuild0014678-beta" />
+		<PackageReference Include="Avalonia.ReactiveUI" Version="0.10.999-cibuild0014678-beta" />
 	</ItemGroup>
 	<ItemGroup>
 		<ProjectReference Include="..\WalletWasabi.Fluent\WalletWasabi.Fluent.csproj" />
 		<ProjectReference Include="..\WalletWasabi.Gui\WalletWasabi.Gui.csproj" />
 		<ProjectReference Include="..\WalletWasabi\WalletWasabi.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<RuntimeHostConfigurationOption Include="System.Globalization.Invariant" Value="true" />
 	</ItemGroup>
 </Project>

@@ -15,7 +15,7 @@ namespace Gma.QrCodeNet.Encoding.Masking
 		private static TriStateMatrix XorMatrix(TriStateMatrix first, BitMatrix second)
 		{
 			int width = first.Width;
-			TriStateMatrix maskedMatrix = new TriStateMatrix(width);
+			TriStateMatrix maskedMatrix = new(width);
 			for (int x = 0; x < width; x++)
 			{
 				for (int y = 0; y < width; y++)
@@ -41,7 +41,5 @@ namespace Gma.QrCodeNet.Encoding.Masking
 		}
 
 		public static TriStateMatrix Apply(this TriStateMatrix matrix, Pattern pattern, ErrorCorrectionLevel errorLevel) => matrix.Xor(pattern, errorLevel);
-
-		public static TriStateMatrix Apply(this Pattern pattern, TriStateMatrix matrix, ErrorCorrectionLevel errorLevel) => matrix.Xor(pattern, errorLevel);
 	}
 }

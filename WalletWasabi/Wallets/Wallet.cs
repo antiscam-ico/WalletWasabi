@@ -1,6 +1,5 @@
 using Microsoft.Extensions.Hosting;
 using NBitcoin;
-using NBitcoin.Protocol;
 using Nito.AsyncEx;
 using System;
 using System.Collections.Generic;
@@ -21,8 +20,8 @@ using WalletWasabi.Logging;
 using WalletWasabi.Models;
 using WalletWasabi.Services;
 using WalletWasabi.Stores;
+using WalletWasabi.Userfacing;
 using WalletWasabi.WebClients.PayJoin;
-using WalletWasabi.WebClients.Wasabi;
 
 namespace WalletWasabi.Wallets
 {
@@ -77,7 +76,6 @@ namespace WalletWasabi.Wallets
 		public KeyManager KeyManager { get; }
 		public WasabiSynchronizer Synchronizer { get; private set; }
 		public CoinJoinClient ChaumianClient { get; private set; }
-		public NodesGroup Nodes { get; private set; }
 		public ServiceConfiguration ServiceConfiguration { get; private set; }
 		public string WalletName => KeyManager.WalletName;
 
@@ -89,17 +87,44 @@ namespace WalletWasabi.Wallets
 		public Network Network { get; }
 		public TransactionProcessor TransactionProcessor { get; private set; }
 
-		public IFeeProvider FeeProvider { get; private set; }
+		public HybridFeeProvider FeeProvider { get; private set; }
 		public FilterModel LastProcessedFilter { get; private set; }
 		public IBlockProvider BlockProvider { get; private set; }
 		private AsyncLock HandleFiltersLock { get; }
 
+		public bool IsLoggedIn { get; private set; }
+
+		public Kitchen Kitchen { get; } = new();
+
+		public bool TryLogin(string password, out string? compatibilityPasswordUsed)
+		{
+			compatibilityPasswordUsed = null;
+
+			if (KeyManager.IsWatchOnly)
+			{
+				IsLoggedIn = true;
+				Kitchen.Cook("");
+			}
+			else if (PasswordHelper.TryPassword(KeyManager, password, out compatibilityPasswordUsed))
+			{
+				IsLoggedIn = true;
+				Kitchen.Cook(password);
+			}
+
+			return IsLoggedIn;
+		}
+
+		public void Logout()
+		{
+			Kitchen.CleanUp();
+			IsLoggedIn = false;
+		}
+
 		public void RegisterServices(
 			BitcoinStore bitcoinStore,
 			WasabiSynchronizer syncer,
-			NodesGroup nodes,
 			ServiceConfiguration serviceConfiguration,
-			IFeeProvider feeProvider,
+			HybridFeeProvider feeProvider,
 			IBlockProvider blockProvider)
 		{
 			if (State > WalletState.WaitingForInit)
@@ -110,12 +135,11 @@ namespace WalletWasabi.Wallets
 			try
 			{
 				BitcoinStore = Guard.NotNull(nameof(bitcoinStore), bitcoinStore);
-				Nodes = Guard.NotNull(nameof(nodes), nodes);
 				Synchronizer = Guard.NotNull(nameof(syncer), syncer);
 				ServiceConfiguration = Guard.NotNull(nameof(serviceConfiguration), serviceConfiguration);
 				FeeProvider = Guard.NotNull(nameof(feeProvider), feeProvider);
 
-				ChaumianClient = new CoinJoinClient(Synchronizer, Network, KeyManager);
+				ChaumianClient = new CoinJoinClient(Synchronizer, Network, KeyManager, Kitchen);
 
 				TransactionProcessor = new TransactionProcessor(BitcoinStore.TransactionStore, KeyManager, ServiceConfiguration.DustThreshold, ServiceConfiguration.PrivacyLevelStrong);
 				Coins = TransactionProcessor.Coins;
@@ -158,20 +182,13 @@ namespace WalletWasabi.Wallets
 					throw new NotSupportedException($"{nameof(Synchronizer)} is not running.");
 				}
 
-				while (!BitcoinStore.IsInitialized)
-				{
-					await Task.Delay(100).ConfigureAwait(false);
-
-					cancel.ThrowIfCancellationRequested();
-				}
-
 				using (BenchmarkLogger.Measure())
 				{
 					await RuntimeParams.LoadAsync().ConfigureAwait(false);
 
 					ChaumianClient.Start();
 
-					using (await HandleFiltersLock.LockAsync().ConfigureAwait(false))
+					using (await HandleFiltersLock.LockAsync(cancel).ConfigureAwait(false))
 					{
 						await LoadWalletStateAsync(cancel).ConfigureAwait(false);
 						await LoadDummyMempoolAsync().ConfigureAwait(false);
@@ -206,8 +223,8 @@ namespace WalletWasabi.Wallets
 			PaymentIntent payments,
 			FeeStrategy feeStrategy,
 			bool allowUnconfirmed = false,
-			IEnumerable<OutPoint> allowedInputs = null,
-			IPayjoinClient payjoinClient = null)
+			IEnumerable<OutPoint>? allowedInputs = null,
+			IPayjoinClient? payjoinClient = null)
 		{
 			var builder = new TransactionFactory(Network, KeyManager, Coins, BitcoinStore.TransactionStore, password, allowUnconfirmed);
 			return builder.BuildTransaction(
@@ -216,7 +233,7 @@ namespace WalletWasabi.Wallets
 				{
 					if (feeStrategy.Type == FeeStrategyType.Target)
 					{
-						return FeeProvider.AllFeeEstimate?.GetFeeRate(feeStrategy.Target) ?? throw new InvalidOperationException("Cannot get fee estimations.");
+						return FeeProvider.AllFeeEstimate?.GetFeeRate(feeStrategy.Target.Value) ?? throw new InvalidOperationException("Cannot get fee estimations.");
 					}
 					else if (feeStrategy.Type == FeeStrategyType.Rate)
 					{
@@ -230,7 +247,7 @@ namespace WalletWasabi.Wallets
 				allowedInputs,
 				lockTimeSelector: () =>
 				{
-					var currentTipHeight = Synchronizer.BitcoinStore.SmartHeaderChain.TipHeight;
+					var currentTipHeight = BitcoinStore.SmartHeaderChain.TipHeight;
 					return LockTimeSelector.Instance.GetLockTimeBasedOnDistribution(currentTipHeight);
 				},
 				payjoinClient);
@@ -289,8 +306,8 @@ namespace WalletWasabi.Wallets
 						foreach (var newCoin in newCoins)
 						{
 							// If it's being mixed and anonset is not sufficient, then queue it.
-							if (newCoin.Unspent && ChaumianClient.HasIngredients
-								&& newCoin.AnonymitySet < ServiceConfiguration.GetMixUntilAnonymitySetValue())
+							if (!newCoin.IsSpent() && Kitchen.HasIngredients
+								&& newCoin.HdPubKey.AnonymitySet < ServiceConfiguration.GetMixUntilAnonymitySetValue())
 							{
 								coinsToQueue.Add(newCoin);
 							}
@@ -317,7 +334,10 @@ namespace WalletWasabi.Wallets
 		{
 			try
 			{
-				TransactionProcessor.Process(tx);
+				if (!TransactionProcessor.IsAware(tx.GetHash()))
+				{
+					TransactionProcessor.Process(tx);
+				}
 			}
 			catch (Exception ex)
 			{
@@ -375,7 +395,7 @@ namespace WalletWasabi.Wallets
 					}
 				} while (Synchronizer.AreRequestsBlocked()); // If requests are blocked, delay mempool cleanup, because coinjoin answers are always priority.
 
-				var task = BitcoinStore.MempoolService?.TryPerformMempoolCleanupAsync(Synchronizer.WasabiClientFactory);
+				var task = BitcoinStore.MempoolService?.TryPerformMempoolCleanupAsync(Synchronizer.HttpClientFactory);
 
 				if (task is { })
 				{
@@ -393,16 +413,13 @@ namespace WalletWasabi.Wallets
 			KeyManager.AssertNetworkOrClearBlockState(Network);
 			Height bestKeyManagerHeight = KeyManager.GetBestHeight();
 
-			TransactionProcessor.Process(BitcoinStore.TransactionStore.ConfirmedStore.GetTransactions().TakeWhile(x => x.Height <= bestKeyManagerHeight));
+			using (BenchmarkLogger.Measure(LogLevel.Info, "Initial Transaction Processing"))
+			{
+				TransactionProcessor.Process(BitcoinStore.TransactionStore.ConfirmedStore.GetTransactions().TakeWhile(x => x.Height <= bestKeyManagerHeight));
+			}
 
 			// Go through the filters and queue to download the matches.
-			await BitcoinStore.IndexStore.ForeachFiltersAsync(async (filterModel) =>
-			{
-				if (filterModel.Filter is { }) // Filter can be null if there is no bech32 tx.
-				{
-					await ProcessFilterModelAsync(filterModel, cancel).ConfigureAwait(false);
-				}
-			},
+			await BitcoinStore.IndexStore.ForeachFiltersAsync(async (filterModel) => await ProcessFilterModelAsync(filterModel, cancel).ConfigureAwait(false),
 			new Height(bestKeyManagerHeight.Value + 1), cancel).ConfigureAwait(false);
 		}
 
@@ -418,7 +435,7 @@ namespace WalletWasabi.Wallets
 			{
 				try
 				{
-					using var client = Synchronizer.WasabiClientFactory.NewBackendClient();
+					var client = Synchronizer.HttpClientFactory.SharedWasabiClient;
 					var compactness = 10;
 
 					var mempoolHashes = await client.GetMempoolHashesAsync(compactness).ConfigureAwait(false);
@@ -486,10 +503,10 @@ namespace WalletWasabi.Wallets
 			State = WalletState.WaitingForInit;
 		}
 
-		public static Wallet CreateAndRegisterServices(Network network, BitcoinStore bitcoinStore, KeyManager keyManager, WasabiSynchronizer synchronizer, NodesGroup nodes, string dataDir, ServiceConfiguration serviceConfiguration, IFeeProvider feeProvider, IBlockProvider blockProvider)
+		public static Wallet CreateAndRegisterServices(Network network, BitcoinStore bitcoinStore, KeyManager keyManager, WasabiSynchronizer synchronizer, string dataDir, ServiceConfiguration serviceConfiguration, HybridFeeProvider feeProvider, IBlockProvider blockProvider)
 		{
 			var wallet = new Wallet(dataDir, network, keyManager);
-			wallet.RegisterServices(bitcoinStore, synchronizer, nodes, serviceConfiguration, feeProvider, blockProvider);
+			wallet.RegisterServices(bitcoinStore, synchronizer, serviceConfiguration, feeProvider, blockProvider);
 			return wallet;
 		}
 	}

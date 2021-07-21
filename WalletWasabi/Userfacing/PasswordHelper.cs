@@ -6,6 +6,7 @@ using System.Security;
 using WalletWasabi.Logging;
 using WalletWasabi.Models;
 using WalletWasabi.Blockchain.Keys;
+using System.Diagnostics.CodeAnalysis;
 
 namespace WalletWasabi.Userfacing
 {
@@ -27,7 +28,7 @@ namespace WalletWasabi.Userfacing
 
 			var buggyClipboard = StringCutIssue(originalPassword);
 
-			List<string> possiblePasswords = new List<string>()
+			List<string> possiblePasswords = new()
 			{
 				originalPassword,
 				buggyClipboard, // Should be here for every OP system. If I create a buggy wallet on OSX and transfer it to other system, it should also work.
@@ -68,23 +69,15 @@ namespace WalletWasabi.Userfacing
 			return length > MaxPasswordLength;
 		}
 
-		public static bool IsTrimable(string? password, out string? trimmedPassword)
+		public static bool IsTrimmable(string? password, [NotNullWhen(true)] out string? trimmedPassword)
 		{
-			trimmedPassword = password;
-			if (password is null)
+			if (password is { } && password.IsTrimmable())
 			{
-				return false;
-			}
-
-			var beforeTrim = password.Length;
-
-			trimmedPassword = password.Trim();
-
-			if (beforeTrim != trimmedPassword.Length)
-			{
+				trimmedPassword = password.Trim();
 				return true;
 			}
 
+			trimmedPassword = password;
 			return false;
 		}
 
@@ -109,7 +102,7 @@ namespace WalletWasabi.Userfacing
 				throw new FormatException(PasswordTooLongMessage);
 			}
 
-			if (IsTrimable(password, out _)) // Password should be formatted, before entering here.
+			if (IsTrimmable(password, out _)) // Password should be formatted, before entering here.
 			{
 				throw new FormatException("Leading and trailing white spaces are not allowed!");
 			}
@@ -150,7 +143,7 @@ namespace WalletWasabi.Userfacing
 
 		public static void ValidatePassword(IValidationErrors errors, string password)
 		{
-			if (IsTrimable(password, out _))
+			if (IsTrimmable(password, out _))
 			{
 				errors.Add(ErrorSeverity.Warning, TrimWarnMessage);
 			}

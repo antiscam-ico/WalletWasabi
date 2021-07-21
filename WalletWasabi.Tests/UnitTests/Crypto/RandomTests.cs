@@ -1,7 +1,6 @@
 using NBitcoin.Secp256k1;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using WalletWasabi.Crypto.Randomness;
 using WalletWasabi.Helpers;
 using Xunit;
@@ -50,7 +49,6 @@ namespace WalletWasabi.Tests.UnitTests.Crypto
 			{
 				new SecureRandom(),
 				new InsecureRandom(),
-				new MockRandom()
 			};
 
 			foreach (var random in randoms)
@@ -59,16 +57,13 @@ namespace WalletWasabi.Tests.UnitTests.Crypto
 				Assert.Throws<ArgumentOutOfRangeException>(() => random.GetBytes(-1));
 				Assert.Throws<ArgumentOutOfRangeException>(() => random.GetBytes(0));
 
-				if (random is MockRandom == false)
-				{
-					var r1 = random.GetBytes(1);
-					Assert.Single(r1);
-					var r2 = random.GetBytes(2);
-					Assert.Equal(2, r2.Length);
-				}
+				var r1 = random.GetBytes(1);
+				Assert.Single(r1);
+				var r2 = random.GetBytes(2);
+				Assert.Equal(2, r2.Length);
 			}
 
-			foreach (var random in randoms.Where(x => x is IDisposable))
+			foreach (WasabiRandom random in randoms)
 			{
 				(random as IDisposable)?.Dispose();
 			}
@@ -104,7 +99,7 @@ namespace WalletWasabi.Tests.UnitTests.Crypto
 				Assert.Equal(count, set.Count);
 			}
 
-			foreach (var random in randoms.Where(x => x is IDisposable))
+			foreach (WasabiRandom random in randoms)
 			{
 				(random as IDisposable)?.Dispose();
 			}

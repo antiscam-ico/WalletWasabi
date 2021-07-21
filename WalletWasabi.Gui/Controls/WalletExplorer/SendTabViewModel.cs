@@ -17,6 +17,8 @@ using WalletWasabi.Wallets;
 using WalletWasabi.WebClients.PayJoin;
 using WalletWasabi.Gui.Validation;
 using WalletWasabi.Logging;
+using WalletWasabi.Tor.Http;
+using WalletWasabi.Tor.Socks5.Pool.Circuits;
 
 namespace WalletWasabi.Gui.Controls.WalletExplorer
 {
@@ -31,6 +33,12 @@ namespace WalletWasabi.Gui.Controls.WalletExplorer
 
 		public override string DoButtonText => "Send Transaction";
 		public override string DoingButtonText => "Sending Transaction...";
+
+		public string PayjoinEndPoint
+		{
+			get => _payjoinEndPoint;
+			set => this.RaiseAndSetIfChanged(ref _payjoinEndPoint, value);
+		}
 
 		protected override async Task BuildTransaction(string password, PaymentIntent payments, FeeStrategy feeStrategy, bool allowUnconfirmed = false, IEnumerable<OutPoint> allowedInputs = null)
 		{
@@ -51,18 +59,9 @@ namespace WalletWasabi.Gui.Controls.WalletExplorer
 					PSBT signedPsbt = null;
 					try
 					{
-						try
-						{
-							signedPsbt = await client.SignTxAsync(Wallet.KeyManager.MasterFingerprint.Value, result.Psbt, cts.Token);
-						}
-						catch (PSBTException ex) when (ex.Message.Contains("NullFail"))
-						{
-							NotificationHelpers.Warning("Fall back to Unverified Inputs Mode, trying to sign again.");
-
-							signedPsbt = await SignPsbtWithoutInputTxsAsync(client, Wallet.KeyManager.MasterFingerprint.Value, result.Psbt, cts.Token);
-						}
+						signedPsbt = await client.SignTxAsync(Wallet.KeyManager.MasterFingerprint.Value, result.Psbt, cts.Token);
 					}
-					catch (HwiException)
+					catch (HwiException ex) when (ex.ErrorCode is not HwiErrorCode.ActionCanceled)
 					{
 						await PinPadViewModel.UnlockAsync();
 						signedPsbt = await client.SignTxAsync(Wallet.KeyManager.MasterFingerprint.Value, result.Psbt, cts.Token);
@@ -82,26 +81,7 @@ namespace WalletWasabi.Gui.Controls.WalletExplorer
 			ResetUi();
 		}
 
-		public static async Task<PSBT> SignPsbtWithoutInputTxsAsync(HwiClient client, HDFingerprint value, PSBT psbt, CancellationToken token)
-		{
-			// Ledger Nano S hackfix https://github.com/MetacoSA/NBitcoin/pull/888
-
-			var noinputtx = psbt.Clone();
-			foreach (var input in noinputtx.Inputs)
-			{
-				input.NonWitnessUtxo = null;
-			}
-
-			return await client.SignTxAsync(value, noinputtx, token).ConfigureAwait(false);
-		}
-
-		public string PayjoinEndPoint
-		{
-			get => _payjoinEndPoint;
-			set => this.RaiseAndSetIfChanged(ref _payjoinEndPoint, value);
-		}
-
-		private IPayjoinClient GetPayjoinClient()
+		private IPayjoinClient? GetPayjoinClient()
 		{
 			if (!string.IsNullOrWhiteSpace(PayjoinEndPoint) &&
 				Uri.IsWellFormedUriString(PayjoinEndPoint, UriKind.Absolute))
@@ -111,18 +91,19 @@ namespace WalletWasabi.Gui.Controls.WalletExplorer
 				{
 					if (payjoinEndPointUri.DnsSafeHost.EndsWith(".onion", StringComparison.OrdinalIgnoreCase))
 					{
-						Logger.LogWarning("Payjoin server is an onion service but Tor is disabled. Ignoring...");
+						Logger.LogWarning("PayJoin server is an onion service but Tor is disabled. Ignoring...");
 						return null;
 					}
 
 					if (Global.Config.Network == Network.Main && payjoinEndPointUri.Scheme != Uri.UriSchemeHttps)
 					{
-						Logger.LogWarning("Payjoin server is not exposed as an onion service nor https. Ignoring...");
+						Logger.LogWarning("PayJoin server is not exposed as an onion service nor https. Ignoring...");
 						return null;
 					}
 				}
 
-				return new PayjoinClient(payjoinEndPointUri, Global.Config.TorSocks5EndPoint);
+				IHttpClient httpClient = Global.ExternalHttpClientFactory.NewHttpClient(() => payjoinEndPointUri, Mode.DefaultCircuit);
+				return new PayjoinClient(payjoinEndPointUri, httpClient);
 			}
 
 			return null;
@@ -147,7 +128,7 @@ namespace WalletWasabi.Gui.Controls.WalletExplorer
 					PayjoinEndPoint = endPoint;
 					return;
 				}
-				NotificationHelpers.Warning("Payjoin is not allowed here.");
+				NotificationHelpers.Warning("PayJoin is not allowed here.");
 			}
 			PayjoinEndPoint = null;
 		}

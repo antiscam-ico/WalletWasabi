@@ -2,41 +2,6 @@ namespace System
 {
 	public static class StringExtensions
 	{
-		public static bool Equals(this string source, string value, StringComparison comparisonType, bool trimmed)
-		{
-			if (comparisonType == StringComparison.Ordinal)
-			{
-				if (trimmed)
-				{
-					return string.CompareOrdinal(source.Trim(), value.Trim()) == 0;
-				}
-				return string.CompareOrdinal(source, value) == 0;
-			}
-			if (trimmed)
-			{
-				return source.Trim().Equals(value.Trim(), comparisonType);
-			}
-			return source.Equals(value, comparisonType);
-		}
-
-		public static bool Contains(this string source, string toCheck, StringComparison comp)
-		{
-			return source.IndexOf(toCheck, comp) >= 0;
-		}
-
-		public static string[] Split(this string me, string separator, StringSplitOptions options = StringSplitOptions.None)
-		{
-			return me.Split(separator.ToCharArray(), options);
-		}
-
-		/// <summary>
-		/// Removes one leading and trailing occurrence of the specified string
-		/// </summary>
-		public static string Trim(this string me, string trimString, StringComparison comparisonType)
-		{
-			return me.TrimStart(trimString, comparisonType).TrimEnd(trimString, comparisonType);
-		}
-
 		/// <summary>
 		/// Removes one leading occurrence of the specified string
 		/// </summary>
@@ -44,7 +9,7 @@ namespace System
 		{
 			if (me.StartsWith(trimString, comparisonType))
 			{
-				return me.Substring(trimString.Length);
+				return me[trimString.Length..];
 			}
 			return me;
 		}
@@ -59,6 +24,19 @@ namespace System
 				return me.Substring(0, me.Length - trimString.Length);
 			}
 			return me;
+		}
+
+		/// <summary>
+		/// Returns true if the string contains leading or trailing whitespace, otherwise returns false.
+		/// </summary>
+		public static bool IsTrimmable(this string me)
+		{
+			if (me.Length == 0)
+			{
+				return false;
+			}
+
+			return char.IsWhiteSpace(me[0]) || char.IsWhiteSpace(me[^1]);
 		}
 	}
 }

@@ -2,6 +2,7 @@ using NBitcoin;
 using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Security;
@@ -11,6 +12,7 @@ using WalletWasabi.Helpers;
 using WalletWasabi.JsonConverters;
 using WalletWasabi.Logging;
 using WalletWasabi.Models;
+using WalletWasabi.Wallets;
 
 namespace WalletWasabi.Blockchain.Keys
 {
@@ -23,10 +25,10 @@ namespace WalletWasabi.Blockchain.Keys
 		// BIP84-ish derivation scheme
 		// m / purpose' / coin_type' / account' / change / address_index
 		// https://github.com/bitcoin/bips/blob/master/bip-0084.mediawiki
-		public static readonly KeyPath DefaultAccountKeyPath = new KeyPath("m/84h/0h/0h");
+		public static readonly KeyPath DefaultAccountKeyPath = new("m/84h/0h/0h");
 
 		[JsonConstructor]
-		public KeyManager(BitcoinEncryptedSecretNoEC encryptedSecret, byte[] chainCode, HDFingerprint? masterFingerprint, ExtPubKey extPubKey, bool? passwordVerified, int? minGapLimit, BlockchainState blockchainState, string filePath = null, KeyPath accountKeyPath = null)
+		public KeyManager(BitcoinEncryptedSecretNoEC encryptedSecret, byte[] chainCode, HDFingerprint? masterFingerprint, ExtPubKey extPubKey, bool? passwordVerified, int? minGapLimit, BlockchainState blockchainState, string? filePath = null, KeyPath? accountKeyPath = null)
 		{
 			HdPubKeys = new List<HdPubKey>();
 			HdPubKeyScriptBytes = new List<byte[]>();
@@ -52,7 +54,7 @@ namespace WalletWasabi.Blockchain.Keys
 			ToFile();
 		}
 
-		public KeyManager(BitcoinEncryptedSecretNoEC encryptedSecret, byte[] chainCode, string password, int minGapLimit = AbsoluteMinGapLimit, string filePath = null, KeyPath accountKeyPath = null)
+		public KeyManager(BitcoinEncryptedSecretNoEC encryptedSecret, byte[] chainCode, string password, int minGapLimit = AbsoluteMinGapLimit, string? filePath = null, KeyPath? accountKeyPath = null)
 		{
 			HdPubKeys = new List<HdPubKey>();
 			HdPubKeyScriptBytes = new List<byte[]>();
@@ -108,15 +110,26 @@ namespace WalletWasabi.Blockchain.Keys
 
 		public string FilePath { get; private set; }
 
+		[MemberNotNullWhen(returnValue: false, nameof(EncryptedSecret))]
 		public bool IsWatchOnly => EncryptedSecret is null;
 
-		public bool IsHardwareWallet => EncryptedSecret is null && MasterFingerprint is { };
+		[MemberNotNullWhen(returnValue: true, nameof(MasterFingerprint))]
+		public bool IsHardwareWallet => EncryptedSecret is null && MasterFingerprint is not null;
 
 		[JsonProperty(Order = 8)]
 		private BlockchainState BlockchainState { get; }
 
 		[JsonProperty(Order = 9)]
 		private List<HdPubKey> HdPubKeys { get; }
+
+		[JsonProperty(Order = 10, PropertyName = "Icon")]
+		public string? Icon { get; private set; }
+
+		[JsonProperty(Order = 11, PropertyName = "PreferPsbtWorkflow")]
+		public bool PreferPsbtWorkflow { get; set; }
+
+		[JsonProperty(Order = 12, PropertyName = "AutoCoinJoin", DefaultValueHandling = DefaultValueHandling.Populate)]
+		public bool AutoCoinJoin { get; set; }
 
 		private object BlockchainStateLock { get; }
 
@@ -132,7 +145,7 @@ namespace WalletWasabi.Blockchain.Keys
 		private object ToFileLock { get; }
 		public string WalletName => string.IsNullOrWhiteSpace(FilePath) ? "" : Path.GetFileNameWithoutExtension(FilePath);
 
-		public static KeyManager CreateNew(out Mnemonic mnemonic, string password, string filePath = null)
+		public static KeyManager CreateNew(out Mnemonic mnemonic, string password, string? filePath = null)
 		{
 			password ??= "";
 
@@ -146,17 +159,17 @@ namespace WalletWasabi.Blockchain.Keys
 			return new KeyManager(encryptedSecret, extKey.ChainCode, masterFingerprint, extPubKey, false, AbsoluteMinGapLimit, new BlockchainState(), filePath, keyPath);
 		}
 
-		public static KeyManager CreateNewWatchOnly(ExtPubKey extPubKey, string filePath = null)
+		public static KeyManager CreateNewWatchOnly(ExtPubKey extPubKey, string? filePath = null)
 		{
 			return new KeyManager(null, null, null, extPubKey, null, AbsoluteMinGapLimit, new BlockchainState(), filePath);
 		}
 
-		public static KeyManager CreateNewHardwareWalletWatchOnly(HDFingerprint masterFingerprint, ExtPubKey extPubKey, string filePath = null)
+		public static KeyManager CreateNewHardwareWalletWatchOnly(HDFingerprint masterFingerprint, ExtPubKey extPubKey, string? filePath = null)
 		{
 			return new KeyManager(null, null, masterFingerprint, extPubKey, null, AbsoluteMinGapLimit, new BlockchainState(), filePath);
 		}
 
-		public static KeyManager Recover(Mnemonic mnemonic, string password, string filePath = null, KeyPath accountKeyPath = null, int minGapLimit = AbsoluteMinGapLimit)
+		public static KeyManager Recover(Mnemonic mnemonic, string password, string? filePath = null, KeyPath? accountKeyPath = null, int minGapLimit = AbsoluteMinGapLimit)
 		{
 			Guard.NotNull(nameof(mnemonic), mnemonic);
 			password ??= "";
@@ -201,115 +214,6 @@ namespace WalletWasabi.Blockchain.Keys
 			km.PasswordVerified ??= true;
 
 			return km;
-		}
-
-		public static bool TryGetEncryptedSecretFromFile(string filePath, out BitcoinEncryptedSecretNoEC encryptedSecret)
-		{
-			encryptedSecret = default;
-			filePath = Guard.NotNullOrEmptyOrWhitespace(nameof(filePath), filePath);
-
-			if (!File.Exists(filePath))
-			{
-				throw new FileNotFoundException($"Wallet file not found at: `{filePath}`.");
-			}
-
-			// Example text to handle: "ExtPubKey": "03BF8271268000000013B9013C881FE456DDF524764F6322F611B03CF6".
-			var encryptedSecretLine = File.ReadLines(filePath) // Enumerated read.
-				.Take(21) // Limit reads to x lines.
-				.FirstOrDefault(line => line.Contains("\"EncryptedSecret\": \"", StringComparison.OrdinalIgnoreCase));
-
-			if (string.IsNullOrEmpty(encryptedSecretLine))
-			{
-				return false;
-			}
-
-			var parts = encryptedSecretLine.Split("\"EncryptedSecret\": \"");
-			if (parts.Length != 2)
-			{
-				throw new FormatException($"Could not split line: {encryptedSecretLine}");
-			}
-
-			var encsec = parts[1].TrimEnd(',', '"');
-			if (string.IsNullOrEmpty(encsec) || encsec.Equals("null", StringComparison.OrdinalIgnoreCase))
-			{
-				return false;
-			}
-
-			encryptedSecret = new BitcoinEncryptedSecretNoEC(encsec);
-			return true;
-		}
-
-		public static bool TryGetExtPubKeyFromFile(string filePath, out ExtPubKey extPubKey)
-		{
-			extPubKey = default;
-			filePath = Guard.NotNullOrEmptyOrWhitespace(nameof(filePath), filePath);
-
-			if (!File.Exists(filePath))
-			{
-				throw new FileNotFoundException($"Wallet file not found at: `{filePath}`.");
-			}
-
-			// Example text to handle: "ExtPubKey": "03BF8271268000000013B9013C881FE456DDF524764F6322F611B03CF6".
-			var extPubKeyLine = File.ReadLines(filePath) // Enumerated read.
-				.Take(21) // Limit reads to x lines.
-				.FirstOrDefault(line => line.Contains("\"ExtPubKey\": \"", StringComparison.OrdinalIgnoreCase));
-
-			if (string.IsNullOrEmpty(extPubKeyLine))
-			{
-				return false;
-			}
-
-			var parts = extPubKeyLine.Split("\"ExtPubKey\": \"");
-			if (parts.Length != 2)
-			{
-				throw new FormatException($"Could not split line: {extPubKeyLine}");
-			}
-
-			var xpub = parts[1].TrimEnd(',', '"');
-			if (string.IsNullOrEmpty(xpub) || xpub.Equals("null", StringComparison.OrdinalIgnoreCase))
-			{
-				return false;
-			}
-
-			extPubKey = NBitcoinHelpers.BetterParseExtPubKey(xpub);
-			return true;
-		}
-
-		public static bool TryGetMasterFingerprintFromFile(string filePath, out HDFingerprint masterFingerprint)
-		{
-			masterFingerprint = default;
-			filePath = Guard.NotNullOrEmptyOrWhitespace(nameof(filePath), filePath);
-
-			if (!File.Exists(filePath))
-			{
-				throw new FileNotFoundException($"Wallet file not found at: `{filePath}`.");
-			}
-
-			// Example text to handle: "ExtPubKey": "03BF8271268000000013B9013C881FE456DDF524764F6322F611B03CF6".
-			var masterFpLine = File.ReadLines(filePath) // Enumerated read.
-				.Take(21) // Limit reads to x lines.
-				.FirstOrDefault(line => line.Contains("\"MasterFingerprint\": \"", StringComparison.OrdinalIgnoreCase));
-
-			if (string.IsNullOrEmpty(masterFpLine))
-			{
-				return false;
-			}
-
-			var parts = masterFpLine.Split("\"MasterFingerprint\": \"");
-			if (parts.Length != 2)
-			{
-				throw new FormatException($"Could not split line: {masterFpLine}");
-			}
-
-			var hex = parts[1].TrimEnd(',', '"');
-			if (string.IsNullOrEmpty(hex) || hex.Equals("null", StringComparison.OrdinalIgnoreCase))
-			{
-				return false;
-			}
-
-			var mfp = new HDFingerprint(ByteHelpers.FromHex(hex));
-			masterFingerprint = mfp;
-			return true;
 		}
 
 		public void SetFilePath(string filePath)
@@ -361,7 +265,7 @@ namespace WalletWasabi.Blockchain.Keys
 			{
 				HdPubKey[] relevantHdPubKeys = HdPubKeys.Where(x => x.IsInternal == isInternal).ToArray();
 
-				KeyPath path = new KeyPath($"{change}/0");
+				KeyPath path = new($"{change}/0");
 				if (relevantHdPubKeys.Any())
 				{
 					int largestIndex = relevantHdPubKeys.Max(x => x.Index);
@@ -436,7 +340,7 @@ namespace WalletWasabi.Blockchain.Keys
 			return newKey;
 		}
 
-		public IEnumerable<HdPubKey> GetKeys(Func<HdPubKey, bool> wherePredicate)
+		public IEnumerable<HdPubKey> GetKeys(Func<HdPubKey, bool>? wherePredicate)
 		{
 			// BIP44-ish derivation scheme
 			// m / purpose' / coin_type' / account' / change / address_index
@@ -520,16 +424,19 @@ namespace WalletWasabi.Blockchain.Keys
 			}
 		}
 
-		public HdPubKey GetKeyForScriptPubKey(Script scriptPubKey)
+		public bool TryGetKeyForScriptPubKey(Script scriptPubKey, [NotNullWhen(true)] out HdPubKey? hdPubKey)
 		{
+			hdPubKey = default;
+
 			lock (ScriptHdPubKeyMapLock)
 			{
 				if (ScriptHdPubKeyMap.TryGetValue(scriptPubKey, out var key))
 				{
-					return key;
+					hdPubKey = key;
+					return true;
 				}
 
-				return default;
+				return false;
 			}
 		}
 
@@ -761,6 +668,17 @@ namespace WalletWasabi.Blockchain.Keys
 					Logger.LogWarning($"Wallet ({WalletName}) height has been set back by {prevHeight - newHeight}. From {prevHeight} to {newHeight}.");
 				}
 			}
+		}
+
+		public void SetIcon(string icon)
+		{
+			Icon = icon;
+			ToFile();
+		}
+
+		public void SetIcon(WalletType type)
+		{
+			SetIcon(type.ToString());
 		}
 
 		public void AssertNetworkOrClearBlockState(Network expectedNetwork)

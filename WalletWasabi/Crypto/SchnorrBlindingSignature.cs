@@ -6,9 +6,32 @@ using NBitcoin.Secp256k1;
 
 namespace WalletWasabi.Crypto
 {
-	[SuppressMessage("Style", "IDE1006:Naming Styles", Justification = "Crypto naming")]
 	public class SchnorrBlinding
 	{
+		public static bool VerifySignature(uint256 message, UnblindedSignature signature, PubKey signerPubKey)
+		{
+			if (!Context.Instance.TryCreatePubKey(signerPubKey.ToBytes(), out var signerECPubkey))
+			{
+				throw new FormatException("Invalid signer pubkey.");
+			}
+
+			var p = signerECPubkey.Q;
+
+			var sG = (signature.S * EC.G).ToGroupElement();
+			var cP = p * signature.C;
+			var r = cP + sG;
+			var t = r.ToGroupElement().x.Normalize();
+
+			using var sha = new SHA256();
+			Span<byte> tmp = stackalloc byte[32];
+			message.ToBytes(tmp, false);
+			sha.Write(tmp);
+			t.WriteToSpan(tmp);
+			sha.Write(tmp);
+			sha.GetHash(tmp);
+			return new Scalar(tmp) == signature.C;
+		}
+
 		public class Requester
 		{
 			private Scalar _v = Scalar.Zero;
@@ -39,8 +62,8 @@ namespace WalletWasabi.Crypto
 					throw new FormatException("Invalid r pubkey.");
 				}
 
-				var P = signerECPubkey.Q;
-				var R = rECPubKey.Q.ToGroupElementJacobian();
+				var p = signerECPubkey.Q;
+				var r = rECPubKey.Q.ToGroupElementJacobian();
 				var t = FE.Zero;
 
 			retry:
@@ -59,10 +82,10 @@ namespace WalletWasabi.Crypto
 					goto retry;
 				}
 
-				var A1 = ctx.MultGen(_v);
-				var A2 = _w * P;
-				var A = R.AddVariable(A1, out _).AddVariable(A2, out _).ToGroupElement();
-				t = A.x.Normalize();
+				var a1 = ctx.MultGen(_v);
+				var a2 = _w * p;
+				var a = r.AddVariable(a1, out _).AddVariable(a2, out _).ToGroupElement();
+				t = a.x.Normalize();
 				if (t.IsZero)
 				{
 					goto retry;
@@ -138,23 +161,30 @@ namespace WalletWasabi.Crypto
 					throw new ArgumentException("Invalid blinded message.", nameof(blindedMessage));
 				}
 
-				if (!Context.Instance.TryCreateECPrivKey(rKey.ToBytes(), out var r))
-				{
-					throw new FormatException("Invalid key.");
-				}
-				if (!Context.Instance.TryCreateECPrivKey(Key.ToBytes(), out var d))
-				{
-					throw new FormatException("Invalid key.");
-				}
+				ECPrivKey? r = null;
+				ECPrivKey? d = null;
 
-				var sp = r.sec + (cp * d.sec).Negate();
-				sp.WriteToSpan(tmp);
-				return new uint256(tmp);
-			}
+				try
+				{
+					if (!Context.Instance.TryCreateECPrivKey(rKey.ToBytes(), out r))
+					{
+						throw new FormatException("Invalid key.");
+					}
 
-			public bool VerifyUnblindedSignature(UnblindedSignature signature, uint256 dataHash)
-			{
-				return VerifySignature(dataHash, signature, Key.PubKey);
+					if (!Context.Instance.TryCreateECPrivKey(Key.ToBytes(), out d))
+					{
+						throw new FormatException("Invalid key.");
+					}
+
+					var sp = r.sec + (cp * d.sec).Negate();
+					sp.WriteToSpan(tmp);
+					return new uint256(tmp);
+				}
+				finally
+				{
+					r?.Dispose();
+					d?.Dispose();
+				}
 			}
 
 			public bool VerifyUnblindedSignature(UnblindedSignature signature, byte[] data)
@@ -162,30 +192,6 @@ namespace WalletWasabi.Crypto
 				var hash = new uint256(Hashes.SHA256(data));
 				return VerifySignature(hash, signature, Key.PubKey);
 			}
-		}
-
-		public static bool VerifySignature(uint256 message, UnblindedSignature signature, PubKey signerPubKey)
-		{
-			if (!Context.Instance.TryCreatePubKey(signerPubKey.ToBytes(), out var signerECPubkey))
-			{
-				throw new FormatException("Invalid signer pubkey.");
-			}
-
-			var P = signerECPubkey.Q;
-
-			var sG = (signature.S * EC.G).ToGroupElement();
-			var cP = P * signature.C;
-			var R = cP + sG;
-			var t = R.ToGroupElement().x.Normalize();
-
-			using var sha = new SHA256();
-			Span<byte> tmp = stackalloc byte[32];
-			message.ToBytes(tmp, false);
-			sha.Write(tmp);
-			t.WriteToSpan(tmp);
-			sha.Write(tmp);
-			sha.GetHash(tmp);
-			return new Scalar(tmp) == signature.C;
 		}
 	}
 }

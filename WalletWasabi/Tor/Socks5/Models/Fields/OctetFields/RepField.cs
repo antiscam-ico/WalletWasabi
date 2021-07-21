@@ -3,128 +3,50 @@ using WalletWasabi.Tor.Socks5.Models.Bases;
 
 namespace WalletWasabi.Tor.Socks5.Models.Fields.OctetFields
 {
+	/// <summary>
+	/// Possible values of "reply field" are:
+	/// <list type="bullet">
+	///   <item>X'00' succeeded</item>
+	///   <item>X'01' general SOCKS server failure</item>
+	///   <item>X'02' connection not allowed by ruleset</item>
+	///   <item>X'03' Network unreachable</item>
+	///   <item>X'04' Host unreachable</item>
+	///   <item>X'05' Connection refused</item>
+	///   <item>X'06' TTL expired</item>
+	///   <item>X'07' Command not supported</item>
+	///   <item>X'08' Address type not supported</item>
+	///   <item>X'09' to X'FF' unassigned</item>
+	/// </list>
+	/// </summary>
+	/// <seealso href="https://www.ietf.org/rfc/rfc1928.txt"/>
 	public class RepField : OctetSerializableBase
 	{
-		#region Constructors
+		public static readonly RepField Succeeded = new((byte)ReplyType.Succeeded);
 
-		public RepField()
+		public static readonly RepField GeneralSocksServerFailure = new((byte)ReplyType.GeneralSocksServerFailure);
+
+		public static readonly RepField CconnectionNotAllowedByRuleset = new((byte)ReplyType.ConnectionNotAllowedByRuleset);
+
+		public static readonly RepField NetworkUnreachable = new((byte)ReplyType.NetworkUnreachable);
+
+		public static readonly RepField HostUnreachable = new((byte)ReplyType.HostUnreachable);
+
+		public static readonly RepField ConnectionRefused = new((byte)ReplyType.ConnectionRefused);
+
+		public static readonly RepField TtlExpired = new((byte)ReplyType.TtlExpired);
+
+		public static readonly RepField CommandNoSupported = new((byte)ReplyType.CommandNotSupported);
+
+		public static readonly RepField AddressTypeNotSupported = new((byte)ReplyType.AddressTypeNotSupported);
+
+		public RepField(byte byteValue)
 		{
+			ByteValue = byteValue;
 		}
-
-		#endregion Constructors
-
-		#region Statics
-
-		// https://www.ietf.org/rfc/rfc1928.txt
-		// REP    Reply field:
-		// o X'00' succeeded
-		// o X'01' general SOCKS server failure
-		// o X'02' connection not allowed by ruleset
-		// o X'03' Network unreachable
-		// o X'04' Host unreachable
-		// o X'05' Connection refused
-		// o X'06' TTL expired
-		// o X'07' Command not supported
-		// o X'08' Address type not supported
-		// o X'09' to X'FF' unassigned
-
-		public static RepField Succeeded
-		{
-			get
-			{
-				var cmd = new RepField();
-				cmd.FromByte((byte)ReplyType.Succeeded);
-				return cmd;
-			}
-		}
-
-		public static RepField GeneralSocksServerFailure
-		{
-			get
-			{
-				var cmd = new RepField();
-				cmd.FromByte((byte)ReplyType.GeneralSocksServerFailure);
-				return cmd;
-			}
-		}
-
-		public static RepField CconnectionNotAllowedByRuleset
-		{
-			get
-			{
-				var cmd = new RepField();
-				cmd.FromByte((byte)ReplyType.ConnectionNotAllowedByRuleset);
-				return cmd;
-			}
-		}
-
-		public static RepField NetworkUnreachable
-		{
-			get
-			{
-				var cmd = new RepField();
-				cmd.FromByte((byte)ReplyType.NetworkUnreachable);
-				return cmd;
-			}
-		}
-
-		public static RepField HostUnreachable
-		{
-			get
-			{
-				var cmd = new RepField();
-				cmd.FromByte((byte)ReplyType.HostUnreachable);
-				return cmd;
-			}
-		}
-
-		public static RepField ConnectionRefused
-		{
-			get
-			{
-				var cmd = new RepField();
-				cmd.FromByte((byte)ReplyType.ConnectionRefused);
-				return cmd;
-			}
-		}
-
-		public static RepField TtlExpired
-		{
-			get
-			{
-				var cmd = new RepField();
-				cmd.FromByte((byte)ReplyType.TtlExpired);
-				return cmd;
-			}
-		}
-
-		public static RepField CommandNoSupported
-		{
-			get
-			{
-				var cmd = new RepField();
-				cmd.FromByte((byte)ReplyType.CommandNotSupported);
-				return cmd;
-			}
-		}
-
-		public static RepField AddressTypeNotSupported
-		{
-			get
-			{
-				var cmd = new RepField();
-				cmd.FromByte((byte)ReplyType.AddressTypeNotSupported);
-				return cmd;
-			}
-		}
-
-		#endregion Statics
-
-		#region Serialization
 
 		public override string ToString()
 		{
-			foreach (ReplyType rt in Enum.GetValues(typeof(ReplyType)))
+			foreach (ReplyType rt in (ReplyType[])Enum.GetValues(typeof(ReplyType)))
 			{
 				if (ByteValue == (byte)rt)
 				{
@@ -133,7 +55,5 @@ namespace WalletWasabi.Tor.Socks5.Models.Fields.OctetFields
 			}
 			return $"Unassigned ({ToHex()})";
 		}
-
-		#endregion Serialization
 	}
 }

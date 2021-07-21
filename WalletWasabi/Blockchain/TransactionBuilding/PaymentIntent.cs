@@ -1,6 +1,7 @@
 using NBitcoin;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using WalletWasabi.Blockchain.Analysis.Clustering;
 using WalletWasabi.Helpers;
@@ -9,19 +10,19 @@ namespace WalletWasabi.Blockchain.TransactionBuilding
 {
 	public class PaymentIntent
 	{
-		public PaymentIntent(Script scriptPubKey, Money amount, bool subtractFee = false, SmartLabel label = null) : this(scriptPubKey, MoneyRequest.Create(amount, subtractFee), label)
+		public PaymentIntent(Script scriptPubKey, Money amount, bool subtractFee = false, SmartLabel? label = null) : this(scriptPubKey, MoneyRequest.Create(amount, subtractFee), label)
 		{
 		}
 
-		public PaymentIntent(Script scriptPubKey, MoneyRequest amount, SmartLabel label = null) : this(scriptPubKey.GetDestination(), amount, label)
+		public PaymentIntent(Script scriptPubKey, MoneyRequest amount, SmartLabel? label = null) : this(scriptPubKey.GetDestination(), amount, label)
 		{
 		}
 
-		public PaymentIntent(IDestination destination, Money amount, bool subtractFee = false, SmartLabel label = null) : this(destination, MoneyRequest.Create(amount, subtractFee), label)
+		public PaymentIntent(IDestination destination, Money amount, bool subtractFee = false, SmartLabel? label = null) : this(destination, MoneyRequest.Create(amount, subtractFee), label)
 		{
 		}
 
-		public PaymentIntent(IDestination destination, MoneyRequest amount, SmartLabel label = null) : this(new DestinationRequest(destination, amount, label))
+		public PaymentIntent(IDestination destination, MoneyRequest amount, SmartLabel? label = null) : this(new DestinationRequest(destination, amount, label))
 		{
 		}
 
@@ -68,7 +69,7 @@ namespace WalletWasabi.Blockchain.TransactionBuilding
 				}
 				else
 				{
-					throw new NotSupportedException("This is impossible.");
+					throw new NotSupportedException("This should never happen.");
 				}
 			}
 			else
@@ -84,20 +85,12 @@ namespace WalletWasabi.Blockchain.TransactionBuilding
 		public IEnumerable<DestinationRequest> Requests { get; }
 		public ChangeStrategy ChangeStrategy { get; }
 		public Money TotalAmount { get; }
-		public int Count => Requests.Count();
 
-		public bool TryGetCustomRequest(out DestinationRequest request)
+		public bool TryGetCustomRequest([NotNullWhen(true)] out DestinationRequest? request)
 		{
-			request = Requests.SingleOrDefault(x => x.Amount.Type == MoneyRequestType.Change || x.Amount.Type == MoneyRequestType.AllRemaining);
+			request = Requests.SingleOrDefault(x => x.Amount.Type is MoneyRequestType.Change or MoneyRequestType.AllRemaining);
 
-			return request is { };
-		}
-
-		public bool TryGetFeeSubtractionRequest(out DestinationRequest request)
-		{
-			request = Requests.SingleOrDefault(x => x.Amount.SubtractFee);
-
-			return request is { };
+			return request is not null;
 		}
 	}
 }

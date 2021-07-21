@@ -14,66 +14,46 @@ namespace Nito.AsyncEx
 	[DebuggerTypeProxy(typeof(DefaultAsyncWaitQueue<>.DebugView))]
 	public sealed class DefaultAsyncWaitQueue<T> : IAsyncWaitQueue<T>
 	{
-		private readonly Deque<TaskCompletionSource<T>> Queue = new Deque<TaskCompletionSource<T>>();
+		private readonly Deque<TaskCompletionSource<T>> _queue = new();
 
-		private int Count => Queue.Count;
+		private int Count => _queue.Count;
 
 		bool IAsyncWaitQueue<T>.IsEmpty => Count == 0;
 
 		Task<T> IAsyncWaitQueue<T>.Enqueue()
 		{
 			var tcs = TaskCompletionSourceExtensions.CreateAsyncTaskSource<T>();
-			Queue.AddToBack(tcs);
+			_queue.AddToBack(tcs);
 			return tcs.Task;
 		}
 
 		void IAsyncWaitQueue<T>.Dequeue(T result)
 		{
-			Queue.RemoveFromFront().TrySetResult(result);
-		}
-
-		void IAsyncWaitQueue<T>.DequeueAll(T result)
-		{
-			foreach (var source in Queue)
-			{
-				source.TrySetResult(result);
-			}
-
-			Queue.Clear();
+			_queue.RemoveFromFront().TrySetResult(result);
 		}
 
 		bool IAsyncWaitQueue<T>.TryCancel(Task task, CancellationToken cancellationToken)
 		{
-			for (int i = 0; i != Queue.Count; ++i)
+			for (int i = 0; i != _queue.Count; ++i)
 			{
-				if (Queue[i].Task == task)
+				if (_queue[i].Task == task)
 				{
-					Queue[i].TrySetCanceled(cancellationToken);
-					Queue.RemoveAt(i);
+					_queue[i].TrySetCanceled(cancellationToken);
+					_queue.RemoveAt(i);
 					return true;
 				}
 			}
 			return false;
 		}
 
-		void IAsyncWaitQueue<T>.CancelAll(CancellationToken cancellationToken)
-		{
-			foreach (var source in Queue)
-			{
-				source.TrySetCanceled(cancellationToken);
-			}
-
-			Queue.Clear();
-		}
-
 		[DebuggerNonUserCode]
 		internal sealed class DebugView
 		{
-			private readonly DefaultAsyncWaitQueue<T> Queue;
+			private readonly DefaultAsyncWaitQueue<T> _queue;
 
 			public DebugView(DefaultAsyncWaitQueue<T> queue)
 			{
-				Queue = queue;
+				_queue = queue;
 			}
 
 			[DebuggerBrowsable(DebuggerBrowsableState.RootHidden)]
@@ -81,8 +61,8 @@ namespace Nito.AsyncEx
 			{
 				get
 				{
-					var result = new List<Task<T>>(Queue.Queue.Count);
-					foreach (var entry in Queue.Queue)
+					var result = new List<Task<T>>(_queue._queue.Count);
+					foreach (var entry in _queue._queue)
 					{
 						result.Add(entry.Task);
 					}

@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 
 namespace Nito.Disposables.Internals
@@ -9,7 +10,7 @@ namespace Nito.Disposables.Internals
 	/// <typeparam name="T">The type of context for the action.</typeparam>
 	public sealed class BoundActionField<T>
 	{
-		private BoundAction _field;
+		private BoundAction? _field;
 
 		/// <summary>
 		/// Initializes the field with the specified action and context.
@@ -35,12 +36,13 @@ namespace Nito.Disposables.Internals
 		/// <summary>
 		/// Whether the field is empty.
 		/// </summary>
+		[MemberNotNullWhen(returnValue: false, nameof(_field))]
 		public bool IsEmpty => Interlocked.CompareExchange(ref _field, null, null) is null;
 
 		/// <summary>
 		/// Atomically retrieves the bound action from the field and sets the field to <c>null</c>. May return <c>null</c>.
 		/// </summary>
-		public IBoundAction TryGetAndUnset()
+		public IBoundAction? TryGetAndUnset()
 		{
 			return Interlocked.Exchange(ref _field, null);
 		}
@@ -70,22 +72,22 @@ namespace Nito.Disposables.Internals
 
 		private sealed class BoundAction : IBoundAction
 		{
-			private readonly Action<T> Action;
-			private readonly T Context;
+			private readonly Action<T> _action;
+			private readonly T _context;
 
 			public BoundAction(Action<T> action, T context)
 			{
-				Action = action;
-				Context = context;
+				_action = action;
+				_context = context;
 			}
 
 			public BoundAction(BoundAction originalBoundAction, Func<T, T> contextUpdater)
 			{
-				Action = originalBoundAction.Action;
-				Context = contextUpdater(originalBoundAction.Context);
+				_action = originalBoundAction._action;
+				_context = contextUpdater(originalBoundAction._context);
 			}
 
-			public void Invoke() => Action?.Invoke(Context);
+			public void Invoke() => _action?.Invoke(_context);
 		}
 	}
 }

@@ -1,5 +1,9 @@
 using NBitcoin.Secp256k1;
+using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Text;
+using WalletWasabi.Helpers;
 
 namespace WalletWasabi.Crypto.Groups
 {
@@ -55,7 +59,17 @@ namespace WalletWasabi.Crypto.Groups
 		/// </summary>
 		public static GroupElement Gs { get; } = FromText("Gs");
 
-		public static bool TryGetFriendlyGeneratorName(GroupElement? ge, out string name)
+		/// <summary>
+		/// Scalars corresponding to 2^i, used in range proofs.
+		/// </summary>
+		public static Scalar[] ScalarPowersOfTwo { get; } = Enumerable.Range(0, 255).Select(i => Scalar.Zero.CAddBit((uint)i, 1)).ToArray();
+
+		/// <summary>
+		/// Generators corresponding to -(2^i) * Gh, used in range proofs.
+		/// </summary>
+		public static GroupElement[] NegatedGhPowersOfTwo { get; } = ScalarPowersOfTwo.Select(b => b.Negate() * Gh).ToArray();
+
+		public static bool TryGetFriendlyGeneratorName(GroupElement? ge, [NotNullWhen(true)] out string? name)
 		{
 			static string FormatName(string generatorName) => $"{generatorName} Generator";
 			name = ge switch

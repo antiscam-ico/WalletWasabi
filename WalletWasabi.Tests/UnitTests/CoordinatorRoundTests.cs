@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using NBitcoin;
+using NBitcoin.RPC;
 using WalletWasabi.Blockchain.Blocks;
 using WalletWasabi.CoinJoin.Coordinator.Banning;
 using WalletWasabi.CoinJoin.Coordinator.Rounds;
@@ -13,21 +14,29 @@ namespace WalletWasabi.Tests.UnitTests
 	public class CoordinatorRoundTests
 	{
 		[Fact]
-		public async Task SsAsync()
+		public async Task TryOptimizeFeesTestAsync()
 		{
 			var rpc = new MockRpcClient();
+			rpc.Network = Network.Main;
+			rpc.OnEstimateSmartFeeAsync = (confTarget, estMode) => Task.FromResult(new EstimateSmartFeeResponse
+			{
+				Blocks = 1,
+				FeeRate = new FeeRate(10m)
+			});
+
 			var roundConfig = new CoordinatorRoundConfig();
 			var utxoReferee = new UtxoReferee(Network.Main, "./", rpc, roundConfig);
 			var confirmationTarget = 12;
-			var round = new CoordinatorRound(rpc, utxoReferee, roundConfig, adjustedConfirmationTarget: confirmationTarget, confirmationTarget, roundConfig.ConfirmationTargetReductionRate);
+			var round = new CoordinatorRound(rpc, utxoReferee, roundConfig, adjustedConfirmationTarget: confirmationTarget, confirmationTarget, roundConfig.ConfirmationTargetReductionRate, TimeSpan.FromSeconds(roundConfig.InputRegistrationTimeout));
 
-			static OutPoint GetRandomOutPoint() => new OutPoint(RandomUtils.GetUInt256(), 0);
+			static OutPoint GetRandomOutPoint() => new(RandomUtils.GetUInt256(), 0);
 			var tx = Network.Main.CreateTransaction();
 			tx.Version = 1;
 			tx.LockTime = LockTime.Zero;
 			tx.Inputs.Add(GetRandomOutPoint(), new Script(OpcodeType.OP_0, OpcodeType.OP_0), sequence: Sequence.Final);
 			tx.Inputs.Add(GetRandomOutPoint(), new Script(OpcodeType.OP_0, OpcodeType.OP_0), sequence: Sequence.Final);
-			tx.Outputs.Add(Money.Coins(1.9995m), new Key().ScriptPubKey);
+			using var key = new Key();
+			tx.Outputs.Add(Money.Coins(1.9995m), key.ScriptPubKey);
 
 			// Under normal circunstances
 			{
@@ -62,38 +71,45 @@ namespace WalletWasabi.Tests.UnitTests
 		}
 
 		[Fact]
-		public async Task XxAsync()
+		public async Task CalculateFeesTestAsync()
 		{
-			const double DefaultMinMemPoolFee = 0.00001000; // 1 s/b (default value)
-			const double HighestMinMemPoolFee = 0.00200000; // 200 s/b
+			const double DefaultMinMempoolFee = 0.00001000; // 1 s/b (default value)
+			const double HighestMinMempoolFee = 0.00200000; // 200 s/b
 			const int InputSizeInBytes = 67;
 			const int OutputSizeInBytes = 33;
 
 			var rpc = new MockRpcClient();
+			rpc.Network = Network.Main;
+			rpc.OnEstimateSmartFeeAsync = (confTarget, estMode) => Task.FromResult(new EstimateSmartFeeResponse
+			{
+				Blocks = 1,
+				FeeRate = new FeeRate(10m)
+			});
+
 			{
 				rpc.OnGetMempoolInfoAsync = () => Task.FromResult(new MemPoolInfo
 				{
-					MemPoolMinFee = DefaultMinMemPoolFee
+					MemPoolMinFee = DefaultMinMempoolFee
 				});
 
 				var (feePerInputs, feePerOutputs) = await CoordinatorRound.CalculateFeesAsync(rpc, 12);
 
-				var defaultMinMemPoolFeeRate = new FeeRate(Money.Coins((decimal)DefaultMinMemPoolFee));
-				Assert.True(feePerInputs > defaultMinMemPoolFeeRate.GetFee(InputSizeInBytes));
-				Assert.True(feePerOutputs > defaultMinMemPoolFeeRate.GetFee(OutputSizeInBytes));
+				var defaultMinMempoolFeeRate = new FeeRate(Money.Coins((decimal)DefaultMinMempoolFee));
+				Assert.True(feePerInputs > defaultMinMempoolFeeRate.GetFee(InputSizeInBytes));
+				Assert.True(feePerOutputs > defaultMinMempoolFeeRate.GetFee(OutputSizeInBytes));
 			}
 
 			{
 				rpc.OnGetMempoolInfoAsync = () => Task.FromResult(new MemPoolInfo
 				{
-					MemPoolMinFee = HighestMinMemPoolFee
+					MemPoolMinFee = HighestMinMempoolFee
 				});
 
 				var (feePerInputs, feePerOutputs) = await CoordinatorRound.CalculateFeesAsync(rpc, 12);
 
-				var highestMinMemPoolFeeRate = new FeeRate(Money.Coins((decimal)HighestMinMemPoolFee * 1.5m));
-				Assert.Equal(highestMinMemPoolFeeRate.GetFee(InputSizeInBytes), feePerInputs);
-				Assert.Equal(highestMinMemPoolFeeRate.GetFee(OutputSizeInBytes), feePerOutputs);
+				var highestMinMempoolFeeRate = new FeeRate(Money.Coins((decimal)HighestMinMempoolFee * 1.5m));
+				Assert.Equal(highestMinMempoolFeeRate.GetFee(InputSizeInBytes), feePerInputs);
+				Assert.Equal(highestMinMempoolFeeRate.GetFee(OutputSizeInBytes), feePerOutputs);
 			}
 		}
 	}

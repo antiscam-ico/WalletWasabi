@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using WalletWasabi.Blockchain.Analysis.Clustering;
+using WalletWasabi.Blockchain.TransactionOutputs;
 using WalletWasabi.Helpers;
 using WalletWasabi.JsonConverters;
 using WalletWasabi.Logging;
@@ -17,7 +18,7 @@ namespace WalletWasabi.Blockchain.Transactions
 	{
 		#region Constructors
 
-		public SmartTransaction(Transaction transaction, Height height, uint256 blockHash = null, int blockIndex = 0, SmartLabel label = null, bool isReplacement = false, DateTimeOffset firstSeen = default)
+		public SmartTransaction(Transaction transaction, Height height, uint256? blockHash = null, int blockIndex = 0, SmartLabel? label = null, bool isReplacement = false, DateTimeOffset firstSeen = default)
 		{
 			Transaction = transaction;
 
@@ -33,11 +34,16 @@ namespace WalletWasabi.Blockchain.Transactions
 			FirstSeen = firstSeen == default ? DateTimeOffset.UtcNow : firstSeen;
 
 			IsReplacement = isReplacement;
+			WalletInputs = new HashSet<SmartCoin>(Transaction.Inputs.Count);
+			WalletOutputs = new HashSet<SmartCoin>(Transaction.Outputs.Count);
 		}
 
 		#endregion Constructors
 
 		#region Members
+
+		public HashSet<SmartCoin> WalletInputs { get; }
+		public HashSet<SmartCoin> WalletOutputs { get; }
 
 		[JsonProperty]
 		[JsonConverter(typeof(TransactionJsonConverter))]
@@ -49,7 +55,7 @@ namespace WalletWasabi.Blockchain.Transactions
 
 		[JsonProperty]
 		[JsonConverter(typeof(Uint256JsonConverter))]
-		public uint256 BlockHash { get; private set; }
+		public uint256? BlockHash { get; private set; }
 
 		[JsonProperty]
 		public int BlockIndex { get; private set; }
@@ -93,7 +99,7 @@ namespace WalletWasabi.Blockchain.Transactions
 		/// * Explicitly by using a nSequence &lt; (0xffffffff - 1) or,
 		/// * Implicitly in case one of its unconfirmed ancestors are replaceable
 		/// </summary>
-		public bool IsRBF => !Confirmed && (Transaction.RBF || IsReplacement);
+		public bool IsRBF => !Confirmed && (Transaction.RBF || IsReplacement || WalletInputs.Any(x => x.IsReplaceable()));
 
 		#endregion Members
 
@@ -201,9 +207,6 @@ namespace WalletWasabi.Blockchain.Transactions
 
 		public static SmartTransaction FromLine(string line, Network expectedNetwork)
 		{
-			line = Guard.NotNullOrEmptyOrWhitespace(nameof(line), line, trim: true);
-			expectedNetwork = Guard.NotNull(nameof(expectedNetwork), expectedNetwork);
-
 			var parts = line.Split(':', StringSplitOptions.None).Select(x => x.Trim()).ToArray();
 
 			var transactionString = parts[1];
@@ -223,7 +226,7 @@ namespace WalletWasabi.Blockchain.Transactions
 				{
 					height = Height.Unknown;
 				}
-				if (!uint256.TryParse(blockHashString, out uint256 blockHash))
+				if (!uint256.TryParse(blockHashString, out var blockHash))
 				{
 					blockHash = null;
 				}

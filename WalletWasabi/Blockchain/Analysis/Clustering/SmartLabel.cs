@@ -5,7 +5,7 @@ using System.Linq;
 
 namespace WalletWasabi.Blockchain.Analysis.Clustering
 {
-	public class SmartLabel : IEquatable<SmartLabel>, IEquatable<string>, IEnumerable<string>
+	public class SmartLabel : IEquatable<SmartLabel>, IEquatable<string>, IEnumerable<string>, IComparable<SmartLabel>
 	{
 		public SmartLabel(params string[] labels) : this(labels as IEnumerable<string>)
 		{
@@ -54,6 +54,16 @@ namespace WalletWasabi.Blockchain.Analysis.Clustering
 		IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
 		#region Equality
+
+		public int CompareTo(SmartLabel? other)
+		{
+			if (other is null)
+			{
+				return -1;
+			}
+
+			return string.CompareOrdinal(ToString(), other.ToString());
+		}
 
 		public override bool Equals(object? obj) => Equals(obj as SmartLabel) || Equals(obj as string);
 
@@ -123,7 +133,7 @@ namespace WalletWasabi.Blockchain.Analysis.Clustering
 
 		public static bool operator !=(SmartLabel? x, string? y) => !(x == y);
 
-		public static implicit operator SmartLabel(string labels) => new SmartLabel(labels);
+		public static implicit operator SmartLabel(string labels) => new(labels);
 
 		public static implicit operator string(SmartLabel label) => label?.LabelString;
 

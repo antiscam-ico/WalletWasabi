@@ -1,6 +1,7 @@
 using NBitcoin;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Net;
 using System.Threading;
@@ -52,12 +53,11 @@ namespace WalletWasabi.Blockchain.Mempool
 			}
 		}
 
-		public bool TryRemoveFromBroadcastStore(uint256 transactionHash, out TransactionBroadcastEntry entry)
+		public bool TryRemoveFromBroadcastStore(uint256 transactionHash)
 		{
 			lock (BroadcastStoreLock)
 			{
 				var found = BroadcastStore.FirstOrDefault(x => x.TransactionId == transactionHash);
-				entry = found;
 
 				if (found is null)
 				{
@@ -71,22 +71,12 @@ namespace WalletWasabi.Blockchain.Mempool
 			}
 		}
 
-		public bool TryGetFromBroadcastStore(uint256 transactionHash, out TransactionBroadcastEntry entry)
+		public bool TryGetFromBroadcastStore(uint256 transactionHash, [NotNullWhen(true)] out TransactionBroadcastEntry? entry)
 		{
 			lock (BroadcastStoreLock)
 			{
-				var found = BroadcastStore.FirstOrDefault(x => x.TransactionId == transactionHash);
-				entry = found;
-
-				return found is { };
-			}
-		}
-
-		public IEnumerable<TransactionBroadcastEntry> GetBroadcastStore()
-		{
-			lock (BroadcastStoreLock)
-			{
-				return BroadcastStore.ToList();
+				entry = BroadcastStore.FirstOrDefault(x => x.TransactionId == transactionHash);
+				return entry is not null;
 			}
 		}
 
@@ -95,7 +85,7 @@ namespace WalletWasabi.Blockchain.Mempool
 		/// <summary>
 		/// Tries to perform mempool cleanup with the help of the backend.
 		/// </summary>
-		public async Task<bool> TryPerformMempoolCleanupAsync(WasabiClientFactory wasabiClientFactory)
+		public async Task<bool> TryPerformMempoolCleanupAsync(HttpClientFactory httpClientFactory)
 		{
 			// If already cleaning, then no need to run it that often.
 			if (Interlocked.CompareExchange(ref _cleanupInProcess, 1, 0) == 1)
@@ -114,10 +104,9 @@ namespace WalletWasabi.Blockchain.Mempool
 				}
 
 				Logger.LogInfo("Start cleaning out mempool...");
-				using (var client = wasabiClientFactory.NewBackendClient())
 				{
 					var compactness = 10;
-					var allMempoolHashes = await client.GetMempoolHashesAsync(compactness).ConfigureAwait(false);
+					var allMempoolHashes = await httpClientFactory.SharedWasabiClient.GetMempoolHashesAsync(compactness).ConfigureAwait(false);
 
 					lock (ProcessedLock)
 					{

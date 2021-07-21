@@ -10,7 +10,7 @@ using WalletWasabi.BitcoinCore;
 using WalletWasabi.Helpers;
 using WalletWasabi.Logging;
 using WalletWasabi.Models;
-using WalletWasabi.Services;
+using WalletWasabi.WebClients.Wasabi;
 
 namespace WalletWasabi.Wallets
 {
@@ -20,13 +20,13 @@ namespace WalletWasabi.Wallets
 	/// </summary>
 	public class P2pBlockProvider : IBlockProvider
 	{
-		private Node _localBitcoinCoreNode = null;
+		private Node? _localBitcoinCoreNode = null;
 
-		public P2pBlockProvider(NodesGroup nodes, CoreNode coreNode, WasabiSynchronizer syncer, ServiceConfiguration serviceConfiguration, Network network)
+		public P2pBlockProvider(NodesGroup nodes, CoreNode? coreNode, HttpClientFactory httpClientFactory, ServiceConfiguration serviceConfiguration, Network network)
 		{
 			Nodes = nodes;
 			CoreNode = coreNode;
-			Synchronizer = syncer;
+			HttpClientFactory = httpClientFactory;
 			ServiceConfiguration = serviceConfiguration;
 			Network = network;
 		}
@@ -34,12 +34,12 @@ namespace WalletWasabi.Wallets
 		public static event EventHandler<bool>? DownloadingBlockChanged;
 
 		public NodesGroup Nodes { get; }
-		public CoreNode CoreNode { get; }
-		public WasabiSynchronizer Synchronizer { get; }
+		public CoreNode? CoreNode { get; }
+		public HttpClientFactory HttpClientFactory { get; }
 		public ServiceConfiguration ServiceConfiguration { get; }
 		public Network Network { get; }
 
-		public Node LocalBitcoinCoreNode
+		public Node? LocalBitcoinCoreNode
 		{
 			get
 			{
@@ -64,7 +64,7 @@ namespace WalletWasabi.Wallets
 		/// <returns>The requested bitcoin block.</returns>
 		public async Task<Block> GetBlockAsync(uint256 hash, CancellationToken cancellationToken)
 		{
-			Block block = null;
+			Block? block = null;
 			try
 			{
 				DownloadingBlockChanged?.Invoke(null, true);
@@ -89,7 +89,7 @@ namespace WalletWasabi.Wallets
 						}
 
 						// Select a random node we are connected to.
-						Node node = Nodes.ConnectedNodes.RandomElement();
+						Node? node = Nodes.ConnectedNodes.RandomElement();
 						if (node is null || !node.IsConnected)
 						{
 							await Task.Delay(100, cancellationToken).ConfigureAwait(false);
@@ -112,11 +112,11 @@ namespace WalletWasabi.Wallets
 								continue;
 							}
 
-							DisconnectNode(node, $"Disconnected node: {node.RemoteSocketAddress}. Block downloaded: {block.GetHash()}.");
+							DisconnectNode(node, $"Disconnected node: {node.RemoteSocketAddress}. Block ({block.GetCoinbaseHeight()}) downloaded: {block.GetHash()}.");
 
 							await NodeTimeoutsAsync(false).ConfigureAwait(false);
 						}
-						catch (Exception ex) when (ex is OperationCanceledException || ex is TaskCanceledException || ex is TimeoutException)
+						catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
 						{
 							await NodeTimeoutsAsync(true).ConfigureAwait(false);
 
@@ -148,7 +148,7 @@ namespace WalletWasabi.Wallets
 			return block;
 		}
 
-		private async Task<Block> TryDownloadBlockFromLocalNodeAsync(uint256 hash, CancellationToken cancellationToken)
+		private async Task<Block?> TryDownloadBlockFromLocalNodeAsync(uint256 hash, CancellationToken cancellationToken)
 		{
 			if (CoreNode?.RpcClient is null)
 			{
@@ -168,9 +168,9 @@ namespace WalletWasabi.Wallets
 
 						// If an onion was added must try to use Tor.
 						// onlyForOnionHosts should connect to it if it's an onion endpoint automatically and non-Tor endpoints through clearnet/localhost
-						if (Synchronizer.WasabiClientFactory.IsTorEnabled)
+						if (HttpClientFactory.IsTorEnabled)
 						{
-							nodeConnectionParameters.TemplateBehaviors.Add(new SocksSettingsBehavior(Synchronizer.WasabiClientFactory.TorEndpoint, onlyForOnionHosts: true, networkCredential: null, streamIsolation: false));
+							nodeConnectionParameters.TemplateBehaviors.Add(new SocksSettingsBehavior(HttpClientFactory.TorEndpoint, onlyForOnionHosts: true, networkCredential: null, streamIsolation: false));
 						}
 
 						var localEndPoint = ServiceConfiguration.BitcoinCoreEndPoint;
@@ -199,7 +199,7 @@ namespace WalletWasabi.Wallets
 					}
 
 					// Get Block from local node
-					Block blockFromLocalNode = null;
+					Block blockFromLocalNode;
 					// Should timeout faster. Not sure if it should ever fail though. Maybe let's keep like this later for remote node connection.
 					using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(64)))
 					{

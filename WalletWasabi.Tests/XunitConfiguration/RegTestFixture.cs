@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using WalletWasabi.Backend;
@@ -15,6 +16,8 @@ using WalletWasabi.Helpers;
 using WalletWasabi.Logging;
 using WalletWasabi.Services;
 using WalletWasabi.Tests.Helpers;
+using WalletWasabi.Tor.Http;
+using Constants = WalletWasabi.Helpers.Constants;
 
 namespace WalletWasabi.Tests.XunitConfiguration
 {
@@ -26,10 +29,12 @@ namespace WalletWasabi.Tests.XunitConfiguration
 		{
 			RuntimeParams.SetDataDir(Path.Combine(Common.DataDir, "RegTests", "Backend"));
 			RuntimeParams.LoadAsync().GetAwaiter().GetResult();
-			var hostedServices = new HostedServices();
-			BackendRegTestNode = TestNodeBuilder.CreateAsync(hostedServices, callerFilePath: "RegTests", callerMemberName: "BitcoinCoreData").GetAwaiter().GetResult();
+			BackendRegTestNode = TestNodeBuilder.CreateAsync(callerFilePath: "RegTests", callerMemberName: "BitcoinCoreData").GetAwaiter().GetResult();
 
-			var testnetBackendDir = EnvironmentHelpers.GetDataDir(Path.Combine("WalletWasabi", "Tests", "RegTests", "Backend"));
+			var walletName = "wallet";
+			BackendRegTestNode.RpcClient.CreateWalletAsync(walletName).GetAwaiter().GetResult();
+
+			var testnetBackendDir = EnvironmentHelpers.GetDataDir(Path.Combine(Common.DataDir, "RegTests", "Backend"));
 			IoHelpers.TryDeleteDirectoryAsync(testnetBackendDir).GetAwaiter().GetResult();
 			Thread.Sleep(100);
 			Directory.CreateDirectory(testnetBackendDir);
@@ -55,7 +60,9 @@ namespace WalletWasabi.Tests.XunitConfiguration
 			var conf = new ConfigurationBuilder()
 				.AddInMemoryCollection(new[] { new KeyValuePair<string, string>("datadir", testnetBackendDir) })
 				.Build();
-			BackendEndPoint = $"http://localhost:{new Random().Next(37130, 38000)}/";
+			BackendEndPoint = $"http://localhost:{CryptoHelpers.RandomInt(37130, 37999)}/";
+			BackendEndPointUri = new Uri(BackendEndPoint);
+			BackendEndPointApiUri = new Uri(BackendEndPointUri, $"/api/v{Constants.BackendMajorVersion}/");
 
 			BackendHost = Host.CreateDefaultBuilder()
 					.ConfigureWebHostDefaults(webBuilder => webBuilder
@@ -65,19 +72,41 @@ namespace WalletWasabi.Tests.XunitConfiguration
 							.UseUrls(BackendEndPoint))
 					.Build();
 
-			Global = (Global)BackendHost.Services.GetService(typeof(Global));
-			Global.HostedServices = hostedServices;
+			if (BackendHost.Services.GetService(typeof(Global)) is not Global global)
+			{
+				throw new InvalidOperationException($"Service {nameof(Global)} is not registered.");
+			}
+
+			Global = global;
 			var hostInitializationTask = BackendHost.RunWithTasksAsync();
 			Logger.LogInfo($"Started Backend webhost: {BackendEndPoint}");
 
+			HttpClient = new HttpClient();
+			BackendHttpClient = new ClearnetHttpClient(HttpClient, () => BackendEndPointUri);
+
+			// Wait for server to initialize
 			var delayTask = Task.Delay(3000);
-			Task.WaitAny(delayTask, hostInitializationTask); // Wait for server to initialize (Without this OSX CI will fail)
+			Task.WaitAny(delayTask, hostInitializationTask);
 		}
 
-		public string BackendEndPoint { get; internal set; }
+		/// <summary>String representation of backend URI: <c>http://localhost:RANDOM_PORT</c>.</summary>
+		public string BackendEndPoint { get; }
+
+		/// <summary>URI in form: <c>http://localhost:RANDOM_PORT</c>.</summary>
+		public Uri BackendEndPointUri { get; }
+
+		/// <summary>URI in form: <c>http://localhost:RANDOM_PORT/api/vAPI_VERSION</c>.</summary>
+		public Uri BackendEndPointApiUri { get; }
+
 		public IHost BackendHost { get; internal set; }
 		public CoreNode BackendRegTestNode { get; internal set; }
 		public Global Global { get; }
+
+		/// <summary>Underlying HTTP client to be used by <see cref="ClearnetHttpClient"/>.</summary>
+		public HttpClient HttpClient { get; }
+
+		/// <summary>Clearnet HTTP client with predefined base URI for Wasabi Backend (note: <c>/api</c> is not part of base URI).</summary>
+		public ClearnetHttpClient BackendHttpClient { get; }
 
 		public static CoordinatorRoundConfig CreateRoundConfig(
 			Money denomination,
@@ -123,6 +152,7 @@ namespace WalletWasabi.Tests.XunitConfiguration
 					BackendHost?.StopAsync().GetAwaiter().GetResult();
 					BackendHost?.Dispose();
 					BackendRegTestNode?.TryStopAsync().GetAwaiter().GetResult();
+					HttpClient.Dispose();
 				}
 
 				_disposedValue = true;

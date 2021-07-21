@@ -11,20 +11,13 @@ namespace WalletWasabi.Tor.Socks5.Models.Messages
 		public TorSocks5Response(byte[] bytes)
 		{
 			Guard.NotNullOrEmpty(nameof(bytes), bytes);
-			Guard.MinimumAndNotNull($"{nameof(bytes)}.{nameof(bytes.Length)}", bytes.Length, 6);
+			Guard.MinimumAndNotNull($"{nameof(bytes)}.{nameof(bytes.Length)}", bytes.Length, smallest: 6);
 
 			Ver = new VerField(bytes[0]);
-
-			Rep = new RepField();
-			Rep.FromByte(bytes[1]);
-
-			Rsv = new RsvField();
-			Rsv.FromByte(bytes[2]);
-
+			Rep = new RepField(bytes[1]);
+			Rsv = new RsvField(bytes[2]);
 			Atyp = new AtypField(bytes[3]);
-
 			BndAddr = new AddrField(bytes[4..^2]);
-
 			BndPort = new PortField(bytes[^2..]);
 		}
 

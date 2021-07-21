@@ -122,7 +122,7 @@ namespace WalletWasabi.Models
 		/// Implicit conversion from Int32 to Height.
 		/// </summary>
 		/// <param name="value">Int32 to convert to Height instance.</param>
-		public static implicit operator Height(int value) => new Height(value);
+		public static implicit operator Height(int value) => new(value);
 
 		/// <summary>
 		/// Implicit conversion from Height to Int32 value.
@@ -136,13 +136,13 @@ namespace WalletWasabi.Models
 		/// Increments the height value by 1
 		/// </summary>
 		/// <param name="me">The instance to be used as base value.</param>
-		public static Height operator ++(Height me) => new Height(me.Value + 1);
+		public static Height operator ++(Height me) => new(me.Value + 1);
 
 		/// <summary>
 		/// Decrements the height value by 1
 		/// </summary>
 		/// <param name="me">The instance to be used as base value.</param>
-		public static Height operator --(Height me) => new Height(me.Value - 1);
+		public static Height operator --(Height me) => new(me.Value - 1);
 
 		/// <summary>
 		/// Unary or binary operator for adding a value to height.
@@ -321,7 +321,7 @@ namespace WalletWasabi.Models
 		public static bool operator <=(Height x, int y) => x.Value <= y;
 
 		/// <inheritdoc/>
-		public override bool Equals(object obj) => obj is Height height && this == height;
+		public override bool Equals(object? obj) => obj is Height height && this == height;
 
 		/// <inheritdoc/>
 		public bool Equals(Height other) => this == other;

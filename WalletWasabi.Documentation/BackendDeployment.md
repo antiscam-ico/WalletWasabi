@@ -4,21 +4,43 @@ Consider updating the versions in `WalletWasabi.Helpers.Constants`. If the versi
 
 ```sh
 sudo apt-get update && cd ~/WalletWasabi && git pull && cd ~/WalletWasabi/WalletWasabi.Backend && dotnet restore && cd ~
+
+# Stop
 sudo service nginx stop
 sudo systemctl stop walletwasabi.service
 sudo killall tor
 bitcoin-cli stop
+
+# Status checks
+echo -n 'Tor: '; systemctl is-active tor; echo -n 'Wasabi: '; systemctl is-active walletwasabi; echo -n 'Bitcoind: '; ps -C bitcoind >/dev/null && echo "active" || echo "incative";
+
+# Upgrade and reboot
 sudo apt-get upgrade -y && sudo apt-get autoremove -y
 sudo reboot
 set DOTNET_CLI_TELEMETRY_OPTOUT=1
+
+# Start Bitcoind
 bitcoind
 bitcoin-cli getblockchaininfo
+
+# Start Tor
 tor
+
+# Start Nginx
 sudo service nginx start
-dotnet publish ~/WalletWasabi/WalletWasabi.Backend --configuration Release --self-contained false
+
+# Start Wasabi
+rm -rf WalletWasabi/WalletWasabi.Backend/bin && dotnet publish ~/WalletWasabi/WalletWasabi.Backend --configuration Release --self-contained false
 sudo systemctl start walletwasabi.service
-pgrep -ilfa tor && pgrep -ilfa bitcoin && pgrep -ilfa wasabi && pgrep -ilfa nginx
-tail -10000 ~/.walletwasabi/backend/Logs.txt
+echo -n 'Tor: '; systemctl is-active tor; echo -n 'Wasabi: '; systemctl is-active walletwasabi; echo -n 'Bitcoind: '; ps -C bitcoind >/dev/null && echo "active" || echo "incative";
+tail -200 ~/.walletwasabi/backend/Logs.txt
+
+# Advanced status checks
+systemctl status nginx
+systemctl status walletwasabi
+systemctl status tor
+pgrep -ilfa bitcoin
+
 ```
 
 # 1. Create Remote Server
@@ -27,7 +49,7 @@ tail -10000 ~/.walletwasabi/backend/Logs.txt
 WalletWasabi.Backend.[TestNet/Main]
 
 ## Image
-Ubuntu 18.04 x64
+Ubuntu 20.04 x64
 
 ## Region
 Mostly anywhere is fine, except the US or China.
@@ -40,12 +62,14 @@ https://bitcoin.org/en/full-node#minimum-requirements
 
 # 2. Setup Server
 
-https://www.digitalocean.com/community/tutorials/initial-server-setup-with-ubuntu-18-04
+https://www.digitalocean.com/community/tutorials/initial-server-setup-with-ubuntu-20-04
 
 ## SSH in as Root
 
 Putty (Copypaste with Ctrl+Insert and Shift+Insert)
 https://www.digitalocean.com/community/tutorials/how-to-use-ssh-keys-with-putty-on-digitalocean-droplets-windows-users
+
+Make sure the new user's SSH pubkey added to ~/.ssh/authorized_keys on the server as well. 
 
 ### Create a New User and Grant Administrative Privileges
 
@@ -59,7 +83,7 @@ usermod -aG sudo user
 By default a process can keep open up to 4096 files. Increase that limit for the `user` user as follows:
 
 ```sh
-sudo pico /etc/security/limits.conf
+pico /etc/security/limits.conf
 ```
 
 ```
@@ -96,7 +120,7 @@ sudo apt-get update && sudo apt-get dist-upgrade -y
 
 # 3. Install .NET SDK
 
-https://www.microsoft.com/net/learn/get-started/linux/ubuntu18-04
+https://docs.microsoft.com/en-us/dotnet/core/install/linux-ubuntu
 
 Opt out of the telemetry:
 
@@ -108,23 +132,14 @@ export DOTNET_CLI_TELEMETRY_OPTOUT=1
 
 ```sh
 sudo apt-get install tor
-```
-
-Check if Tor is already running in the background:
-
-```sh
 pgrep -ilfa tor
 sudo killall tor
-```
-
-Verify Tor is properly running:
-```sh
-tor
 ```
 
 Create torrc:
 
 ```sh
+mkdir ~/.walletwasabi
 sudo pico /etc/tor/torrc
 ```
 
@@ -154,25 +169,13 @@ Enable firewall:
 sudo ufw allow 80
 ```
 
+Start Tor and verify it is properly running:
+```sh
+tor
+pgrep -ilfa tor
+```
+
 **Backup the generated private key!**
-
-## Update Tor
-
-```
-$ sudo pico /etc/apt/sources.list
-
-Append these two lines:
-deb https://deb.torproject.org/torproject.org bionic main
-deb-src https://deb.torproject.org/torproject.org bionic main
-
-$ curl https://deb.torproject.org/torproject.org/A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89.asc | gpg --import
-$ gpg --export A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89 > exported
-$ sudo apt-key add exported
-$ rm exported
-$ sudo apt update
-$ sudo apt install tor
-IMPORTANT! Press N otherwise it will replace the torrc with a default version and bye wasabi hidden service
-```
 
 # 5. Install, Configure and Synchronize bitcoind (Bitcoin Knots)
 
@@ -190,6 +193,7 @@ pico ~/.bitcoin/bitcoin.conf
 testnet=[0/1]
 
 [main/test].rpcworkqueue=256
+[main/test].rpcthreads=8
 
 [main/test].txindex=1
 
@@ -207,11 +211,20 @@ https://github.com/MrChrisJ/fullnode/issues/18
 
 ```sh
 sudo ufw allow ssh
-sudo ufw allow [18333/8333]
+sudo ufw allow [8333/18333]
 bitcoind
 bitcoin-cli getblockcount
 bitcoin-cli stop
 bitcoind
+```
+
+### Upgrade Knots
+
+```sh
+bitcoin-cli stop
+sudo apt-get update && sudo apt install --only-upgrade bitcoind
+bitcoind --version
+bitcoin-cli getblockchaininfo
 ```
 
 # 6. Publish, Configure and Run WalletWasabi.Backend
@@ -222,18 +235,8 @@ cd WalletWasabi
 dotnet restore
 dotnet build
 dotnet publish WalletWasabi.Backend --configuration Release --self-contained false
-dotnet WalletWasabi.Backend/bin/Release/netcoreapp3.1/publish/WalletWasabi.Backend.dll
 cd ..
-cat .walletwasabi/backend/Logs.txt
-pico .walletwasabi/backend/Config.json
-pico .walletwasabi/backend/CcjRoundConfig.json
-dotnet WalletWasabi/WalletWasabi.Backend/bin/Release/netcoreapp3.1/publish/WalletWasabi.Backend.dll
-cat .walletwasabi/backend/Logs.txt
 ```
-
-# 7. Monitor the Apps
-
-## WalletWasabi.Backend
 
 https://docs.microsoft.com/en-us/aspnet/core/host-and-deploy/linux-nginx?view=aspnetcore-2.0&tabs=aspnetcore2x
 
@@ -246,8 +249,8 @@ sudo pico /etc/systemd/system/walletwasabi.service
 Description=WalletWasabi Backend API
 
 [Service]
-WorkingDirectory=/home/user/WalletWasabi/WalletWasabi.Backend/bin/Release/netcoreapp3.1/publish
-ExecStart=/usr/bin/dotnet /home/user/WalletWasabi/WalletWasabi.Backend/bin/Release/netcoreapp3.1/publish/WalletWasabi.Backend.dll
+WorkingDirectory=/home/user/WalletWasabi/WalletWasabi.Backend/bin/Release/net5.0/publish
+ExecStart=/usr/bin/dotnet /home/user/WalletWasabi/WalletWasabi.Backend/bin/Release/net5.0/publish/WalletWasabi.Backend.dll
 Restart=always
 RestartSec=10  # Restart service after 10 seconds if dotnet service crashes
 SyslogIdentifier=walletwasabi-backend
@@ -262,6 +265,11 @@ WantedBy=multi-user.target
 sudo systemctl enable walletwasabi.service
 sudo systemctl start walletwasabi.service
 systemctl status walletwasabi.service
+tail -10000 .walletwasabi/backend/Logs.txt
+
+pico .walletwasabi/backend/Config.json
+pico .walletwasabi/backend/CcjRoundConfig.json
+sudo systemctl start walletwasabi.service
 tail -10000 .walletwasabi/backend/Logs.txt
 ```
 
@@ -432,11 +440,13 @@ EOS
 The following command line adds a welcome banner indicating the ssh logged user that he is in the production server.
 
 ```sh
-sudo tee -a /etc/motd <<EOS
+sudo pico /etc/motd
+```
+
+```
 ****************************************************************************
-*** Attention! Wasabi PRODUCTION server                                  ***
+***            Attention! Wasabi PRODUCTION server                       ***
 ****************************************************************************
-EOS
 ```
 
 ## Prompt
@@ -483,3 +493,41 @@ Check all of the certificates that you’ve obtained and tries to renew any that
 `sudo certbot renew`
 
 Detailed instuctions about configuration [here](https://certbot.eff.org/lets-encrypt/ubuntubionic-nginx).
+
+## Accessing Software Logs
+
+You can read the log file with the `tail -1000 ~/.walletwasabi/backend/Logs.txt`. However these logs aren't kept around forever. In order to access a longer timeframe use `sudo tail -1000 /var/log/syslog | grep "walletwasabi-backend"` and `sudo tail -1000 /var/log/syslog.1 | grep "walletwasabi-backend"`.
+
+## Setup Cloudflare Anti-DDoS for clearnet website
+
+Properly implemented DDoS mitigation is what keeps websites online during an attack.
+We use Cloudflare to mitigate a DDoS attack by detecting, responding, routing and adapting to it.
+
+### Create a Cloudflare account
+
+1. Visit https://dash.cloudflare.com/sign-up
+2. Enter Email address and Password
+3. Click `Create Account`
+
+### Add a domain to Cloudflare
+
+1. Log in to your Cloudflare account
+2. Click on `Add site` from the top navigation bar
+3. Enter your website’s root domain and then click `Add Site`.
+For example, if your website is `https://www.wasabiwallet.co`, type `wasabiwallet.co`
+4. Cloudflare will automatically identify your DNS records
+5. Click `Next`
+6. Select a plan level (the `Free` package is enough, as it contains DDoS attack mitigation and Global Content Delivery Network services)
+7. Click `Confirm` in the Confirm Plan window that appears
+8. Review whether all DNS records were identified in the DNS query results window
+9. Click `Continue`
+10. Copy the 2 Cloudflare nameservers displayed and click `Continue`
+
+### Replace default nameservers with Cloudflare ones
+
+1. Log in to your registrar (eg. Godaddy)
+2. Make sure your registrar has disabled DNSSEC for your domain
+3. Replace the current/default nameserver records in your registrar account with the information you copied from Cloudflare
+4. Wait some hours (max 24) while your registrar updates your nameservers and the DNS propagates
+You will receive an email when your site is active on Cloudflare
+

@@ -46,12 +46,7 @@ namespace WalletWasabi.Gui.ViewModels
 				.ObserveOn(RxApp.TaskpoolScheduler)
 				.Where(x => x)
 				.Take(1)
-				.Select(x =>
-				{
-					var encoder = new QrEncoder();
-					encoder.TryEncode(Address, out var qrCode);
-					return qrCode.Matrix.InternalArray;
-				})
+				.Select(x => new QrEncoder().Encode(Address.ToUpperInvariant()).Matrix.InternalArray)
 				.ObserveOn(RxApp.MainThreadScheduler)
 				.Subscribe(qr => QrCode = qr, onError: ex => Logger.LogError(ex)); // Catch the exceptions everywhere (e.g.: Select) except in Subscribe.
 
@@ -236,7 +231,7 @@ namespace WalletWasabi.Gui.ViewModels
 				await Task.Delay(1000, cancelToken);
 				ClipboardNotificationVisible = false;
 			}
-			catch (Exception ex) when (ex is OperationCanceledException || ex is TaskCanceledException || ex is TimeoutException)
+			catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
 			{
 				Logger.LogTrace(ex);
 			}

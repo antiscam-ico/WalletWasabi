@@ -1,6 +1,12 @@
 using NBitcoin;
 using NBitcoin.RPC;
+using Newtonsoft.Json.Linq;
 using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
 using WalletWasabi.BitcoinCore.Rpc.Models;
 using WalletWasabi.Helpers;
@@ -55,9 +61,45 @@ namespace WalletWasabi.BitcoinCore.Rpc
 			return await Rpc.GetMempoolEntryAsync(txid, throwIfNotFound).ConfigureAwait(false);
 		}
 
-		public virtual async Task<MemPoolInfo> GetMempoolInfoAsync()
+		public virtual async Task<MemPoolInfo> GetMempoolInfoAsync(CancellationToken cancel = default)
 		{
-			return await Rpc.GetMemPoolAsync().ConfigureAwait(false);
+			try
+			{
+				var response = await Rpc.SendCommandAsync(RPCOperations.getmempoolinfo, true).ConfigureAwait(false);
+				static IEnumerable<FeeRateGroup> ExtractFeeRateGroups(JToken jt) =>
+					jt switch
+					{
+						JObject jo => jo.Properties()
+							.Where(p => p.Name != "total_fees")
+							.Select(p => new FeeRateGroup
+							{
+								Group = int.Parse(p.Name),
+								Sizes = p.Value.Value<ulong>("sizes"),
+								Count = p.Value.Value<uint>("count"),
+								Fees = Money.Satoshis(p.Value.Value<ulong>("fees")),
+								From = new FeeRate(p.Value.Value<decimal>("from_feerate")),
+								To = new FeeRate(Math.Min(50_000, p.Value.Value<decimal>("to_feerate")))
+							}),
+						_ => Enumerable.Empty<FeeRateGroup>()
+					};
+
+				return new MemPoolInfo()
+				{
+					Size = int.Parse((string)response.Result["size"], CultureInfo.InvariantCulture),
+					Bytes = int.Parse((string)response.Result["bytes"], CultureInfo.InvariantCulture),
+					Usage = int.Parse((string)response.Result["usage"], CultureInfo.InvariantCulture),
+					MaxMemPool = double.Parse((string)response.Result["maxmempool"], CultureInfo.InvariantCulture),
+					MemPoolMinFee = double.Parse((string)response.Result["mempoolminfee"], CultureInfo.InvariantCulture),
+					MinRelayTxFee = double.Parse((string)response.Result["minrelaytxfee"], CultureInfo.InvariantCulture),
+					Histogram = ExtractFeeRateGroups(response.Result["fee_histogram"]).ToArray()
+				};
+			}
+			catch (RPCException ex) when (ex.RPCCode == RPCErrorCode.RPC_MISC_ERROR)
+			{
+				cancel.ThrowIfCancellationRequested();
+
+				return await Rpc.GetMemPoolAsync().ConfigureAwait(false);
+			}
 		}
 
 		public virtual async Task<uint256[]> GetRawMempoolAsync()
@@ -65,14 +107,14 @@ namespace WalletWasabi.BitcoinCore.Rpc
 			return await Rpc.GetRawMempoolAsync().ConfigureAwait(false);
 		}
 
-		public virtual async Task<GetTxOutResponse> GetTxOutAsync(uint256 txid, int index, bool includeMempool = true)
+		public virtual async Task<GetTxOutResponse?> GetTxOutAsync(uint256 txid, int index, bool includeMempool = true)
 		{
 			return await Rpc.GetTxOutAsync(txid, index, includeMempool).ConfigureAwait(false);
 		}
 
 		public virtual async Task<MempoolAcceptResult> TestMempoolAcceptAsync(Transaction transaction, bool allowHighFees = false)
 		{
-			return await Rpc.TestMempoolAcceptAsync(transaction, allowHighFees);
+			return await Rpc.TestMempoolAcceptAsync(transaction, allowHighFees).ConfigureAwait(false);
 		}
 
 		public virtual async Task StopAsync()
@@ -108,7 +150,7 @@ namespace WalletWasabi.BitcoinCore.Rpc
 		public async Task<VerboseBlockInfo> GetVerboseBlockAsync(uint256 blockId)
 		{
 			var resp = await Rpc.SendCommandAsync(RPCOperations.getblock, blockId, 3).ConfigureAwait(false);
-			return RpcParser.ParseVerboseBlockResponse(resp.Result.ToString());
+			return RpcParser.ParseVerboseBlockResponse(resp.ResultString);
 		}
 
 		public async Task<uint256[]> GenerateToAddressAsync(int nBlocks, BitcoinAddress address)
@@ -148,6 +190,34 @@ namespace WalletWasabi.BitcoinCore.Rpc
 			return await Rpc.GetRawTransactionAsync(txid, throwIfNotFound).ConfigureAwait(false);
 		}
 
+		public virtual async Task<IEnumerable<Transaction>> GetRawTransactionsAsync(IEnumerable<uint256> txids, CancellationToken cancel)
+		{
+			// 8 is half of the default rpcworkqueue
+			List<Transaction> acquiredTransactions = new();
+			foreach (var txidsChunk in txids.ChunkBy(8))
+			{
+				IRPCClient batchingRpc = PrepareBatch();
+				List<Task<Transaction>> tasks = new();
+				foreach (var txid in txidsChunk)
+				{
+					tasks.Add(batchingRpc.GetRawTransactionAsync(txid, throwIfNotFound: false));
+				}
+
+				await batchingRpc.SendBatchAsync().ConfigureAwait(false);
+
+				foreach (var tx in await Task.WhenAll(tasks).ConfigureAwait(false))
+				{
+					if (tx is not null)
+					{
+						acquiredTransactions.Add(tx);
+					}
+					cancel.ThrowIfCancellationRequested();
+				}
+			}
+
+			return acquiredTransactions;
+		}
+
 		public virtual async Task<int> GetBlockCountAsync()
 		{
 			return await Rpc.GetBlockCountAsync().ConfigureAwait(false);
@@ -176,6 +246,11 @@ namespace WalletWasabi.BitcoinCore.Rpc
 		public Task<EstimateSmartFeeResponse> TryEstimateSmartFeeAsync(int confirmationTarget, EstimateSmartFeeMode estimateMode = EstimateSmartFeeMode.Conservative)
 		{
 			return Rpc.TryEstimateSmartFeeAsync(confirmationTarget, estimateMode: estimateMode);
+		}
+
+		public Task<RPCClient> CreateWalletAsync(string walletNameOrPath, CreateWalletOptions? options = null)
+		{
+			return Rpc.CreateWalletAsync(walletNameOrPath, options);
 		}
 
 		#endregion For Testing Only

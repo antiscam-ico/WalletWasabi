@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using NBitcoin.Secp256k1;
+using WalletWasabi.Crypto.Groups;
 
 namespace WalletWasabi.Helpers
 {
@@ -25,6 +28,7 @@ namespace WalletWasabi.Helpers
 			return (bool)value;
 		}
 
+		[return: NotNull]
 		public static T NotNull<T>(string parameterName, T value)
 		{
 			AssertCorrectParameterName(parameterName);
@@ -52,11 +56,11 @@ namespace WalletWasabi.Helpers
 		public static T Same<T>(string parameterName, T expected, T actual)
 		{
 			AssertCorrectParameterName(parameterName);
-			NotNull(nameof(expected), expected);
+			T expected2 = NotNull(nameof(expected), expected);
 
-			if (!expected.Equals(actual))
+			if (!expected2.Equals(actual))
 			{
-				throw new ArgumentException($"Parameter must be {expected}. Actual: {actual}.", parameterName);
+				throw new ArgumentException($"Parameter must be {expected2}. Actual: {actual}.", parameterName);
 			}
 
 			return actual;
@@ -87,16 +91,6 @@ namespace WalletWasabi.Helpers
 		}
 
 		public static IDictionary<TKey, TValue> NotNullOrEmpty<TKey, TValue>(string parameterName, IDictionary<TKey, TValue> value)
-		{
-			NotNull(parameterName, value);
-			if (!value.Any())
-			{
-				throw new ArgumentException("Parameter cannot be empty.", parameterName);
-			}
-			return value;
-		}
-
-		public static Dictionary<TKey, TValue> NotNullOrEmpty<TKey, TValue>(string parameterName, Dictionary<TKey, TValue> value)
 		{
 			NotNull(parameterName, value);
 			if (!value.Any())
@@ -138,16 +132,14 @@ namespace WalletWasabi.Helpers
 			return value;
 		}
 
-		public static T MaximumAndNotNull<T>(string parameterName, T value, T greatest) where T : IComparable
+		public static IEnumerable<T> InRange<T>(string containerName, IEnumerable<T> container, int minCount, int maxCount)
 		{
-			NotNull(parameterName, value);
-
-			if (value.CompareTo(greatest) > 0)
+			var count = container.Count();
+			if (count < minCount || count > maxCount)
 			{
-				throw new ArgumentOutOfRangeException(parameterName, value, $"Parameter cannot be greater than {greatest}.");
+				throw new ArgumentOutOfRangeException(containerName, count, $"{containerName}.Count() cannot be less than {minCount} or greater than {maxCount}.");
 			}
-
-			return value;
+			return container;
 		}
 
 		public static T InRangeAndNotNull<T>(string parameterName, T value, T smallest, T greatest) where T : IComparable
@@ -179,5 +171,31 @@ namespace WalletWasabi.Helpers
 				? ""
 				: str.Trim();
 		}
+
+		[DebuggerStepThrough]
+		public static GroupElement NotNullOrInfinity(string parameterName, GroupElement groupElement)
+			=> groupElement?.IsInfinity switch
+			{
+				null => throw new ArgumentNullException(parameterName),
+				true => throw new ArgumentException("Point at infinity is not a valid value.", parameterName),
+				false => groupElement
+			};
+
+		[DebuggerStepThrough]
+		public static IEnumerable<GroupElement> NotNullOrInfinity(string parameterName, IEnumerable<GroupElement> groupElements)
+			=> groupElements switch
+			{
+				null => throw new ArgumentNullException(parameterName),
+				_ when !groupElements.Any() => throw new ArgumentException(parameterName),
+				_ => groupElements.Select((ge, i) => NotNullOrInfinity($"{parameterName}[{i}]", ge)).ToList()
+			};
+
+		[DebuggerStepThrough]
+		public static Scalar NotZero(string parameterName, Scalar scalar)
+			=> scalar switch
+			{
+				_ when scalar.IsZero => throw new ArgumentException("Value cannot be zero.", parameterName),
+				_ => scalar
+			};
 	}
 }

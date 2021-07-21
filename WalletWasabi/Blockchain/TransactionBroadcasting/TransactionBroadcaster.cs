@@ -1,6 +1,7 @@
 using NBitcoin;
 using NBitcoin.Protocol;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -9,8 +10,9 @@ using WalletWasabi.Blockchain.Transactions;
 using WalletWasabi.Helpers;
 using WalletWasabi.Logging;
 using WalletWasabi.Models;
-using WalletWasabi.Services;
 using WalletWasabi.Stores;
+using WalletWasabi.Tor.Http;
+using WalletWasabi.Tor.Socks5.Pool.Circuits;
 using WalletWasabi.Wallets;
 using WalletWasabi.WebClients.Wasabi;
 
@@ -18,22 +20,26 @@ namespace WalletWasabi.Blockchain.TransactionBroadcasting
 {
 	public class TransactionBroadcaster
 	{
-		public TransactionBroadcaster(Network network, BitcoinStore bitcoinStore, WasabiSynchronizer synchronizer, NodesGroup nodes, WalletManager walletManager, IRPCClient rpc)
+		public TransactionBroadcaster(Network network, BitcoinStore bitcoinStore, HttpClientFactory httpClientFactory, WalletManager walletManager)
 		{
-			Nodes = Guard.NotNull(nameof(nodes), nodes);
 			Network = Guard.NotNull(nameof(network), network);
 			BitcoinStore = Guard.NotNull(nameof(bitcoinStore), bitcoinStore);
-			Synchronizer = Guard.NotNull(nameof(synchronizer), synchronizer);
+			HttpClientFactory = httpClientFactory;
 			WalletManager = Guard.NotNull(nameof(walletManager), walletManager);
-			RpcClient = rpc;
 		}
 
 		public BitcoinStore BitcoinStore { get; }
-		public WasabiSynchronizer Synchronizer { get; }
+		public HttpClientFactory HttpClientFactory { get; }
 		public Network Network { get; }
-		public NodesGroup Nodes { get; }
-		public IRPCClient RpcClient { get; private set; }
+		public NodesGroup? Nodes { get; private set; }
+		public IRPCClient? RpcClient { get; private set; }
 		public WalletManager WalletManager { get; }
+
+		public void Initialize(NodesGroup nodes, IRPCClient? rpc)
+		{
+			Nodes = Guard.NotNull(nameof(nodes), nodes);
+			RpcClient = rpc;
+		}
 
 		private async Task BroadcastTransactionToNetworkNodeAsync(SmartTransaction transaction, Node node)
 		{
@@ -47,7 +53,7 @@ namespace WalletWasabi.Blockchain.TransactionBroadcasting
 			// Give 7 seconds to send the inv payload.
 			await node.SendMessageAsync(invPayload).WithAwaitCancellationAsync(TimeSpan.FromSeconds(7)).ConfigureAwait(false); // ToDo: It's dangerous way to cancel. Implement proper cancellation to NBitcoin!
 
-			if (BitcoinStore.MempoolService.TryGetFromBroadcastStore(transaction.GetHash(), out TransactionBroadcastEntry entry))
+			if (BitcoinStore.MempoolService.TryGetFromBroadcastStore(transaction.GetHash(), out TransactionBroadcastEntry? entry))
 			{
 				// Give 7 seconds for serving.
 				var timeout = 0;
@@ -85,25 +91,36 @@ namespace WalletWasabi.Blockchain.TransactionBroadcasting
 		private async Task BroadcastTransactionToBackendAsync(SmartTransaction transaction)
 		{
 			Logger.LogInfo("Broadcasting with backend...");
-			using (WasabiClient client = Synchronizer.WasabiClientFactory.NewBackendClient(true))
-			{
-				try
-				{
-					await client.BroadcastAsync(transaction).ConfigureAwait(false);
-				}
-				catch (HttpRequestException ex2) when (RpcErrorTools.IsSpentError(ex2.Message))
-				{
-					if (transaction.Transaction.Inputs.Count == 1) // If we tried to only spend one coin, then we can mark it as spent. If there were more coins, then we do not know.
-					{
-						OutPoint input = transaction.Transaction.Inputs.First().PrevOut;
-						foreach (var coin in WalletManager.CoinsByOutPoint(input))
-						{
-							coin.SpentAccordingToBackend = true;
-						}
-					}
+			IHttpClient httpClient = HttpClientFactory.NewBackendHttpClient(Mode.NewCircuitPerRequest);
 
-					throw;
+			WasabiClient client = new(httpClient);
+
+			try
+			{
+				await client.BroadcastAsync(transaction).ConfigureAwait(false);
+			}
+			catch (HttpRequestException ex2) when (RpcErrorTools.IsSpentError(ex2.Message))
+			{
+				if (transaction.Transaction.Inputs.Count == 1) // If we tried to only spend one coin, then we can mark it as spent. If there were more coins, then we do not know.
+				{
+					OutPoint input = transaction.Transaction.Inputs.First().PrevOut;
+					foreach (var coin in WalletManager.CoinsByOutPoint(input))
+					{
+						coin.SpentAccordingToBackend = true;
+					}
 				}
+
+				// Exception message is in form: 'message:::tx1:::tx2:::etc.' where txs are encoded in HEX.
+				IEnumerable<SmartTransaction> txs = ex2.Message.Split(":::", StringSplitOptions.RemoveEmptyEntries)
+					.Skip(1) // Skip the exception message.
+					.Select(x => new SmartTransaction(Transaction.Parse(x, Network), Height.Mempool));
+
+				foreach (var tx in txs)
+				{
+					WalletManager.Process(tx);
+				}
+
+				throw;
 			}
 
 			BelieveTransaction(transaction);
@@ -134,7 +151,12 @@ namespace WalletWasabi.Blockchain.TransactionBroadcasting
 					throw new InvalidOperationException($"Transaction broadcasting to nodes does not work in {Network.RegTest}.");
 				}
 
-				Node node = Nodes.ConnectedNodes.RandomElement();
+				if (Nodes is null)
+				{
+					throw new InvalidOperationException($"Nodes are not yet initialized.");
+				}
+
+				Node? node = Nodes.ConnectedNodes.RandomElement();
 				while (node is null || !node.IsConnected || Nodes.ConnectedNodes.Count < 5)
 				{
 					// As long as we are connected to at least 4 nodes, we can always try again.
@@ -174,12 +196,17 @@ namespace WalletWasabi.Blockchain.TransactionBroadcasting
 			}
 			finally
 			{
-				BitcoinStore.MempoolService.TryRemoveFromBroadcastStore(transaction.GetHash(), out _); // Remove it just to be sure. Probably has been removed previously.
+				BitcoinStore.MempoolService.TryRemoveFromBroadcastStore(transaction.GetHash()); // Remove it just to be sure. Probably has been removed previously.
 			}
 		}
 
 		private async Task BroadcastTransactionWithRpcAsync(SmartTransaction transaction)
 		{
+			if (RpcClient is null)
+			{
+				throw new InvalidOperationException("Trying to broadcast on RPC but it is not initialized.");
+			}
+
 			await RpcClient.SendRawTransactionAsync(transaction.Transaction).ConfigureAwait(false);
 			BelieveTransaction(transaction);
 			Logger.LogInfo($"Transaction is successfully broadcasted with RPC: {transaction.GetHash()}.");

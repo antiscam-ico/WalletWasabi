@@ -1,20 +1,29 @@
 using NBitcoin;
 using Newtonsoft.Json;
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using WalletWasabi.Bases;
 using WalletWasabi.Blockchain.Analysis.Clustering;
+using WalletWasabi.Blockchain.TransactionOutputs;
 using WalletWasabi.Helpers;
 using WalletWasabi.JsonConverters;
 
 namespace WalletWasabi.Blockchain.Keys
 {
 	[JsonObject(MemberSerialization.OptIn)]
-	public class HdPubKey : IEquatable<HdPubKey>
+	public class HdPubKey : NotifyPropertyChangedBase, IEquatable<HdPubKey>
 	{
+		public const int DefaultHighAnonymitySet = int.MaxValue;
+
+		private int _anonymitySet = DefaultHighAnonymitySet;
+		private Cluster _cluster;
+
 		public HdPubKey(PubKey pubKey, KeyPath fullKeyPath, SmartLabel label, KeyState keyState)
 		{
 			PubKey = Guard.NotNull(nameof(pubKey), pubKey);
 			FullKeyPath = Guard.NotNull(nameof(fullKeyPath), fullKeyPath);
+			_cluster = new Cluster(this);
 			SetLabel(label, null);
 			KeyState = keyState;
 
@@ -44,6 +53,22 @@ namespace WalletWasabi.Blockchain.Keys
 			}
 		}
 
+		public Cluster Cluster
+		{
+			get => _cluster;
+			set => RaiseAndSetIfChanged(ref _cluster, value);
+		}
+
+		public HashSet<uint256> OutputAnonSetReasons { get; } = new();
+
+		public int AnonymitySet
+		{
+			get => _anonymitySet;
+			private set => RaiseAndSetIfChanged(ref _anonymitySet, value);
+		}
+
+		public HashSet<SmartCoin> Coins { get; } = new HashSet<SmartCoin>();
+
 		[JsonProperty(Order = 1)]
 		[JsonConverter(typeof(PubKeyJsonConverter))]
 		public PubKey PubKey { get; }
@@ -72,7 +97,17 @@ namespace WalletWasabi.Blockchain.Keys
 
 		private int HashCode { get; }
 
-		public void SetLabel(SmartLabel label, KeyManager kmToFile = null)
+		public void SetAnonymitySet(int anonset, uint256? outputAnonSetReason = null)
+		{
+			if (outputAnonSetReason is not null)
+			{
+				OutputAnonSetReasons.Add(outputAnonSetReason);
+			}
+
+			AnonymitySet = anonset;
+		}
+
+		public void SetLabel(SmartLabel label, KeyManager? kmToFile = null)
 		{
 			label ??= SmartLabel.Empty;
 
@@ -82,11 +117,12 @@ namespace WalletWasabi.Blockchain.Keys
 			}
 
 			Label = label;
+			Cluster.UpdateLabels();
 
 			kmToFile?.ToFile();
 		}
 
-		public void SetKeyState(KeyState state, KeyManager kmToFile = null)
+		public void SetKeyState(KeyState state, KeyManager? kmToFile = null)
 		{
 			if (KeyState == state)
 			{

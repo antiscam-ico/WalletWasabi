@@ -1,18 +1,15 @@
 using System;
-using WalletWasabi.Helpers;
 using WalletWasabi.Tor.Socks5.Models.Interfaces;
 
 namespace WalletWasabi.Tor.Socks5.Models.Bases
 {
 	public abstract class OctetSerializableBase : IByteSerializable, IEquatable<OctetSerializableBase>, IEquatable<byte>
 	{
-		protected byte ByteValue { get; set; }
+		protected byte ByteValue { get; init; }
 
 		#region Serialization
 
 		public byte ToByte() => ByteValue;
-
-		public void FromByte(byte b) => ByteValue = b;
 
 		public string ToHex(bool xhhSyntax = false)
 		{
@@ -21,19 +18,6 @@ namespace WalletWasabi.Tor.Socks5.Models.Bases
 				return $"X'{ByteHelpers.ToHex(ToByte())}'";
 			}
 			return ByteHelpers.ToHex(ToByte());
-		}
-
-		public void FromHex(string hex)
-		{
-			hex = Guard.NotNullOrEmptyOrWhitespace(nameof(hex), hex, true);
-
-			byte[] bytes = ByteHelpers.FromHex(hex);
-			if (bytes.Length != 1)
-			{
-				throw new FormatException($"{nameof(hex)} must be exactly one byte. Actual: {bytes.Length} bytes. Value: {hex}.");
-			}
-
-			ByteValue = bytes[0];
 		}
 
 		public override string ToString()

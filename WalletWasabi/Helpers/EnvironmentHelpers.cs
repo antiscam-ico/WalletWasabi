@@ -3,6 +3,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,31 +21,6 @@ namespace WalletWasabi.Helpers
 			ES_CONTINUOUS = 0x80000000,
 			ES_DISPLAY_REQUIRED = 0x00000002,
 			ES_SYSTEM_REQUIRED = 0x00000001
-			// Legacy flag, should not be used.
-			// ES_USER_PRESENT = 0x00000004
-		}
-
-		private const int ProcessorCountRefreshIntervalMs = 30000;
-
-		private static volatile int InternalProcessorCount;
-		private static volatile int LastProcessorCountRefreshTicks;
-
-		/// <summary>
-		/// https://github.com/i3arnon/ConcurrentHashSet/blob/master/src/ConcurrentHashSet/PlatformHelper.cs
-		/// </summary>
-		internal static int ProcessorCount
-		{
-			get
-			{
-				var now = Environment.TickCount;
-				if (InternalProcessorCount == 0 || now - LastProcessorCountRefreshTicks >= ProcessorCountRefreshIntervalMs)
-				{
-					InternalProcessorCount = Environment.ProcessorCount;
-					LastProcessorCountRefreshTicks = now;
-				}
-
-				return InternalProcessorCount;
-			}
 		}
 
 		// appName, dataDir
@@ -218,15 +194,12 @@ namespace WalletWasabi.Helpers
 
 			fileExtension = fileExtension.TrimStart('.'); // Remove . if added by the caller.
 
-			using (RegistryKey key = Registry.ClassesRoot.OpenSubKey($".{fileExtension}"))
+			using (var key = Registry.ClassesRoot.OpenSubKey($".{fileExtension}"))
 			{
-				if (key is { })
+				// Read the (Default) value.
+				if (key?.GetValue(null) is not null)
 				{
-					object val = key.GetValue(null); // Read the (Default) value.
-					if (val is { })
-					{
-						return true;
-					}
+					return true;
 				}
 			}
 			return false;
@@ -245,6 +218,20 @@ namespace WalletWasabi.Helpers
 			}
 
 			return fullBaseDirectory;
+		}
+
+		public static string GetExecutablePath()
+		{
+			var fullBaseDir = GetFullBaseDirectory();
+			var wassabeeFileName = Path.Combine(fullBaseDir, Constants.ExecutableName);
+			wassabeeFileName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? $"{wassabeeFileName}.exe" : $"{wassabeeFileName}";
+			if (File.Exists(wassabeeFileName))
+			{
+				return wassabeeFileName;
+			}
+			var assemblyName = Assembly.GetEntryAssembly()?.GetName().Name ?? throw new NullReferenceException("Assembly or Assembly's Name was null.");
+			var fluentExecutable = Path.Combine(fullBaseDir, assemblyName);
+			return RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? $"{fluentExecutable}.exe" : $"{fluentExecutable}";
 		}
 
 		[DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]

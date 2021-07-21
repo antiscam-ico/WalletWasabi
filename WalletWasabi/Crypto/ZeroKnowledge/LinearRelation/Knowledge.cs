@@ -4,19 +4,11 @@ using WalletWasabi.Helpers;
 
 namespace WalletWasabi.Crypto.ZeroKnowledge.LinearRelation
 {
-	public class Knowledge
+	internal record Knowledge
 	{
-		public Knowledge(Statement statement, ScalarVector witness)
+		internal Knowledge(Statement statement, ScalarVector witness)
 		{
-			Guard.NotNull(nameof(statement), statement);
-			Guard.NotNullOrEmpty(nameof(witness), witness);
-			Guard.True(nameof(witness), witness.Count() == statement.Equations.First().Generators.Count(), $"{nameof(witness)} size does not match {nameof(statement)}.{nameof(statement.Equations)}");
-
-			// don't try to prove something which isn't true
-			foreach (var equation in statement.Equations)
-			{
-				equation.CheckSolution(witness);
-			}
+			Guard.True(nameof(witness), witness.Count == statement.Equations.First().Generators.Count, $"{nameof(witness)} size does not match {nameof(statement)}.{nameof(statement.Equations)}");
 
 			Statement = statement;
 			Witness = witness;
@@ -27,5 +19,14 @@ namespace WalletWasabi.Crypto.ZeroKnowledge.LinearRelation
 
 		internal ScalarVector RespondToChallenge(Scalar challenge, ScalarVector secretNonces) =>
 			Equation.Respond(Witness, secretNonces, challenge);
+
+		/// <summary>For testing purposes.</summary>
+		internal void AssertSoundness()
+		{
+			foreach (var equation in Statement.Equations)
+			{
+				equation.CheckSolution(Witness);
+			}
+		}
 	}
 }

@@ -8,9 +8,6 @@ using Avalonia.Utilities;
 
 namespace WalletWasabi.Fluent.Controls
 {
-	// Note: Most of this class is a copy paste from Avalonia. So the code style and standard should
-	// be kept as is to allow for future maintenance.
-
 	/// <summary>
 	/// Works like a wrap panel.. but concatenates the Items in ConcatenatedChildren.
 	/// Also the very last child in ConcatenatedChildren will fill the remaining space.
@@ -45,7 +42,7 @@ namespace WalletWasabi.Fluent.Controls
 
 		public ConcatenatingWrapPanel()
 		{
-			ConcatenatedChildren.CollectionChanged += base.ChildrenChanged;
+			ConcatenatedChildren.CollectionChanged += ChildrenChanged;
 		}
 
 		public Avalonia.Controls.Controls ConcatenatedChildren { get; } = new Avalonia.Controls.Controls();
@@ -55,8 +52,8 @@ namespace WalletWasabi.Fluent.Controls
 		/// </summary>
 		public Orientation Orientation
 		{
-			get { return GetValue(OrientationProperty); }
-			set { SetValue(OrientationProperty, value); }
+			get => GetValue(OrientationProperty);
+			set => SetValue(OrientationProperty, value);
 		}
 
 		/// <summary>
@@ -64,8 +61,8 @@ namespace WalletWasabi.Fluent.Controls
 		/// </summary>
 		public double ItemWidth
 		{
-			get { return GetValue(ItemWidthProperty); }
-			set { SetValue(ItemWidthProperty, value); }
+			get => GetValue(ItemWidthProperty);
+			set => SetValue(ItemWidthProperty, value);
 		}
 
 		/// <summary>
@@ -73,8 +70,8 @@ namespace WalletWasabi.Fluent.Controls
 		/// </summary>
 		public double ItemHeight
 		{
-			get { return GetValue(ItemHeightProperty); }
-			set { SetValue(ItemHeightProperty, value); }
+			get => GetValue(ItemHeightProperty);
+			set => SetValue(ItemHeightProperty, value);
 		}
 
 		/// <summary>
@@ -96,24 +93,31 @@ namespace WalletWasabi.Fluent.Controls
 				case NavigationDirection.First:
 					index = 0;
 					break;
+
 				case NavigationDirection.Last:
 					index = children.Count - 1;
 					break;
+
 				case NavigationDirection.Next:
 					++index;
 					break;
+
 				case NavigationDirection.Previous:
 					--index;
 					break;
+
 				case NavigationDirection.Left:
 					index = horiz ? index - 1 : -1;
 					break;
+
 				case NavigationDirection.Right:
 					index = horiz ? index + 1 : -1;
 					break;
+
 				case NavigationDirection.Up:
 					index = horiz ? -1 : index - 1;
 					break;
+
 				case NavigationDirection.Down:
 					index = horiz ? -1 : index + 1;
 					break;
@@ -125,7 +129,7 @@ namespace WalletWasabi.Fluent.Controls
 			}
 			else
 			{
-				return null;
+				return null!;
 			}
 		}
 
@@ -149,13 +153,14 @@ namespace WalletWasabi.Fluent.Controls
 			for (int i = 0, count = children.Count; i < count; i++)
 			{
 				var child = children[i];
-				if (child != null)
+				if (child is not null)
 				{
 					// Flow passes its own constraint to children
 					child.Measure(childConstraint);
 
 					// This is the size of the child in UV space
-					var sz = new UVSize(orientation,
+					var sz = new UVSize(
+						orientation,
 						itemWidthSet ? itemWidth : child.DesiredSize.Width,
 						itemHeightSet ? itemHeight : child.DesiredSize.Height);
 
@@ -203,18 +208,21 @@ namespace WalletWasabi.Fluent.Controls
 			bool itemWidthSet = !double.IsNaN(itemWidth);
 			bool itemHeightSet = !double.IsNaN(itemHeight);
 			bool useItemU = orientation == Orientation.Horizontal ? itemWidthSet : itemHeightSet;
+			bool hasWrapped = false;
 
 			for (int i = 0; i < children.Count; i++)
 			{
 				var child = children[i];
-				if (child != null)
+				if (child is not null)
 				{
-					var sz = new UVSize(orientation,
+					var sz = new UVSize(
+						orientation,
 						itemWidthSet ? itemWidth : child.DesiredSize.Width,
 						itemHeightSet ? itemHeight : child.DesiredSize.Height);
 
 					if (MathUtilities.GreaterThan(curLineSize.U + sz.U, uvFinalSize.U)) // Need to switch to another line
 					{
+						hasWrapped = true;
 						ArrangeLine(accumulatedV, curLineSize.V, firstInLine, i, useItemU, itemU, uvFinalSize);
 
 						accumulatedV += curLineSize.V;
@@ -244,6 +252,8 @@ namespace WalletWasabi.Fluent.Controls
 				ArrangeLine(accumulatedV, curLineSize.V, firstInLine, children.Count, useItemU, itemU, uvFinalSize);
 			}
 
+			PseudoClasses.Set(":wrapped", hasWrapped);
+
 			return finalSize;
 		}
 
@@ -257,7 +267,7 @@ namespace WalletWasabi.Fluent.Controls
 			for (int i = start; i < end; i++)
 			{
 				var child = children[i];
-				if (child != null)
+				if (child is not null)
 				{
 					if (i == children.Count - 1)
 					{
@@ -287,6 +297,10 @@ namespace WalletWasabi.Fluent.Controls
 
 		private struct UVSize
 		{
+			internal double U;
+			internal double V;
+			private Orientation _orientation;
+
 			internal UVSize(Orientation orientation, double width, double height)
 			{
 				U = V = 0d;
@@ -301,19 +315,36 @@ namespace WalletWasabi.Fluent.Controls
 				_orientation = orientation;
 			}
 
-			internal double U;
-			internal double V;
-			private Orientation _orientation;
-
 			internal double Width
 			{
-				get { return _orientation == Orientation.Horizontal ? U : V; }
-				set { if (_orientation == Orientation.Horizontal) U = value; else V = value; }
+				get => _orientation == Orientation.Horizontal ? U : V;
+				set
+				{
+					if (_orientation == Orientation.Horizontal)
+					{
+						U = value;
+					}
+					else
+					{
+						V = value;
+					}
+				}
 			}
+
 			internal double Height
 			{
-				get { return _orientation == Orientation.Horizontal ? V : U; }
-				set { if (_orientation == Orientation.Horizontal) V = value; else U = value; }
+				get => _orientation == Orientation.Horizontal ? V : U;
+				set
+				{
+					if (_orientation == Orientation.Horizontal)
+					{
+						V = value;
+					}
+					else
+					{
+						U = value;
+					}
+				}
 			}
 		}
 	}

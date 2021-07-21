@@ -4,26 +4,11 @@ namespace WalletWasabi.Tor.Socks5.Models.Fields.OctetFields
 {
 	public class RsvField : OctetSerializableBase
 	{
-		#region Constructors
+		public static readonly RsvField X00 = new(0x00);
 
-		public RsvField()
+		public RsvField(byte byteValue)
 		{
+			ByteValue = byteValue;
 		}
-
-		#endregion Constructors
-
-		#region Statics
-
-		public static RsvField X00
-		{
-			get
-			{
-				var rsv = new RsvField();
-				rsv.FromHex("00");
-				return rsv;
-			}
-		}
-
-		#endregion Statics
 	}
 }

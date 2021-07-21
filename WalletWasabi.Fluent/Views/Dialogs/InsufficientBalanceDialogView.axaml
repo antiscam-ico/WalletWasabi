@@ -1,0 +1,30 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:c="using:WalletWasabi.Fluent.Controls"
+             xmlns:dialog="using:WalletWasabi.Fluent.ViewModels.Dialogs"
+             mc:Ignorable="d" d:DesignWidth="428" d:DesignHeight="371"
+             x:DataType="dialog:InsufficientBalanceDialogViewModel"
+             x:CompileBindings="True"
+             x:Class="WalletWasabi.Fluent.Views.Dialogs.InsufficientBalanceDialogView">
+  <c:ContentArea Title="{Binding Title}"
+                 Caption="{Binding Caption}">
+    <c:QuestionControl Content="Would you like to do this instead?"
+                       YesCommand="{Binding NextCommand}"
+                       NoCommand="{Binding CancelCommand}"
+                       HighlightButton="YesButton">
+      <c:QuestionControl.IconContent>
+        <StackPanel Spacing="20">
+          <c:PreviewItem Icon="{StaticResource btc_logo}"
+                         Text="Send a total of"
+                         Content="{Binding AmountText, FallbackValue=0.213 BTC (≈55.34 USD)}" />
+          <Separator />
+          <c:PreviewItem Icon="{StaticResource paper_cash_regular}"
+                         Text="for an additional fee of"
+                         Content="{Binding FeeText, FallbackValue=235 satoshis (≈55.34 USD)}" />
+        </StackPanel>
+      </c:QuestionControl.IconContent>
+    </c:QuestionControl>
+  </c:ContentArea>
+</UserControl>

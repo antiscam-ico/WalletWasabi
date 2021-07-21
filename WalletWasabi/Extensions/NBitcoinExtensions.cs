@@ -3,22 +3,28 @@ using NBitcoin.Protocol;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using WalletWasabi.Blockchain.Keys;
+using WalletWasabi.Blockchain.TransactionOutputs;
 using WalletWasabi.Blockchain.Transactions;
-using WalletWasabi.CoinJoin.Common.Crypto;
 using WalletWasabi.Helpers;
 using WalletWasabi.Logging;
 using WalletWasabi.Models;
-using static WalletWasabi.Crypto.SchnorrBlinding;
 
 namespace NBitcoin
 {
 	public static class NBitcoinExtensions
 	{
+		private static NumberFormatInfo CurrencyNumberFormat = new()
+		{
+			NumberGroupSeparator = " ",
+			NumberDecimalDigits = 0
+		};
+
 		public static async Task<Block> DownloadBlockAsync(this Node node, uint256 hash, CancellationToken cancellationToken)
 		{
 			if (node.State == NodeState.Connected)
@@ -49,14 +55,6 @@ namespace NBitcoin
 				{
 					return b.Object;
 				}
-			}
-		}
-
-		public static IEnumerable<OutPoint> ToOutPoints(this TxInList me)
-		{
-			foreach (var input in me)
-			{
-				yield return input.PrevOut;
 			}
 		}
 
@@ -122,19 +120,40 @@ namespace NBitcoin
 				.Where(x => includeSingle || x.Value > 1);
 		}
 
-		public static int GetAnonymitySet(this Transaction me, int outputIndex)
+		public static int GetAnonymitySet(this Transaction me, uint outputIndex)
+			=> me.GetAnonymitySets(new[] { outputIndex }).First().Value;
+
+		public static IDictionary<uint, int> GetAnonymitySets(this Transaction me, IEnumerable<uint> outputIndices)
 		{
-			// 1. Get the output corresponting to the output index.
-			var output = me.Outputs[outputIndex];
-			// 2. Get the number of equal outputs.
-			int equalOutputs = me.GetIndistinguishableOutputs(includeSingle: true).Single(x => x.value == output.Value).count;
-			// 3. Anonymity set cannot be larger than the number of inputs.
+			var anonsets = new Dictionary<uint, int>();
 			var inputCount = me.Inputs.Count;
-			var anonSet = Math.Min(equalOutputs, inputCount);
-			return anonSet;
+
+			var indistinguishableOutputs = me.Outputs
+				.GroupBy(x => x.ScriptPubKey)
+				.ToDictionary(x => x.Key, y => y.Sum(z => z.Value))
+				.GroupBy(x => x.Value)
+				.ToDictionary(x => x.Key, y => y.Count());
+
+			foreach (var outputIndex in outputIndices)
+			{
+				// 1. Get the output corresponting to the output index.
+				var output = me.Outputs[outputIndex];
+
+				// 2. Get the number of equal outputs.
+				int equalOutputs = indistinguishableOutputs[output.Value];
+
+				// 3. Anonymity set cannot be larger than the number of inputs.
+				var anonSet = Math.Min(equalOutputs, inputCount);
+
+				anonsets.Add(outputIndex, anonSet);
+			}
+
+			return anonsets;
 		}
 
-		public static int GetAnonymitySet(this Transaction me, uint outputIndex) => GetAnonymitySet(me, (int)outputIndex);
+		public static bool IsLikelyCoinjoin(this Transaction me)
+			=> me.Inputs.Count > 1 // The tx must have more than one input in order to be a coinjoin.
+			&& me.HasIndistinguishableOutputs(); // The tx must have more than one equal output in order to be a coinjoin.
 
 		/// <summary>
 		/// Careful, if it's in a legacy block then this won't work.
@@ -143,7 +162,7 @@ namespace NBitcoin
 		{
 			Guard.NotNull(nameof(me), me);
 
-			bool notNull = me.WitScript is { };
+			bool notNull = me.WitScript is not null;
 			bool notEmpty = me.WitScript != WitScript.Empty;
 			return notNull && notEmpty;
 		}
@@ -169,7 +188,7 @@ namespace NBitcoin
 		/// </summary>
 		public static void AddWithOptimize(this TxOutList me, Money money, Script scriptPubKey)
 		{
-			TxOut found = me.FirstOrDefault(x => x.ScriptPubKey == scriptPubKey);
+			var found = me.FirstOrDefault(x => x.ScriptPubKey == scriptPubKey);
 			if (found is { })
 			{
 				found.Value += money;
@@ -179,35 +198,6 @@ namespace NBitcoin
 				me.Add(money, scriptPubKey);
 			}
 		}
-
-		/// <summary>
-		/// If scriptpubkey is already present, just add the value.
-		/// </summary>
-		public static void AddWithOptimize(this TxOutList me, Money money, IDestination destination)
-		{
-			me.AddWithOptimize(money, destination.ScriptPubKey);
-		}
-
-		/// <summary>
-		/// If scriptpubkey is already present, just add the value.
-		/// </summary>
-		public static void AddWithOptimize(this TxOutList me, TxOut txOut)
-		{
-			me.AddWithOptimize(txOut.Value, txOut.ScriptPubKey);
-		}
-
-		/// <summary>
-		/// If scriptpubkey is already present, just add the value.
-		/// </summary>
-		public static void AddRangeWithOptimize(this TxOutList me, IEnumerable<TxOut> collection)
-		{
-			foreach (var txOut in collection)
-			{
-				me.AddWithOptimize(txOut);
-			}
-		}
-
-		public static uint256 BlindMessage(this Requester requester, uint256 messageHash, SchnorrPubKey schnorrPubKey) => requester.BlindMessage(messageHash, schnorrPubKey.RpubKey, schnorrPubKey.SignerPubKey);
 
 		public static string ToZpub(this ExtPubKey extPubKey, Network network)
 		{
@@ -271,7 +261,7 @@ namespace NBitcoin
 			return toStringBuilder.ToString();
 		}
 
-		public static BitcoinWitPubKeyAddress TransformToNetworkNetwork(this BitcoinWitPubKeyAddress me, Network desiredNetwork)
+		public static BitcoinWitPubKeyAddress TransformToNetwork(this BitcoinWitPubKeyAddress me, Network desiredNetwork)
 		{
 			Network originalNetwork = me.Network;
 
@@ -285,7 +275,7 @@ namespace NBitcoin
 			return newAddress;
 		}
 
-		public static void SortByAmount(this TxInList list, List<Coin> coins)
+		public static void SortByAmount(this TxInList list, IEnumerable<Coin> coins)
 		{
 			var map = new Dictionary<TxIn, Coin>();
 			foreach (var coin in coins)
@@ -337,7 +327,7 @@ namespace NBitcoin
 			{
 				if (!parentCounter.ContainsKey(node))
 				{
-					parentCounter.Add(node, node.Parents.Count());
+					parentCounter.Add(node, node.Parents.Count);
 					foreach (var child in node.Children)
 					{
 						Walk(child);
@@ -382,12 +372,6 @@ namespace NBitcoin
 			return null;
 		}
 
-		private static NumberFormatInfo CurrencyNumberFormat = new NumberFormatInfo()
-		{
-			NumberGroupSeparator = " ",
-			NumberDecimalDigits = 0
-		};
-
 		private static string ToCurrency(this Money btc, string currency, decimal exchangeRate, bool privacyMode = false)
 		{
 			var dollars = exchangeRate * btc.ToDecimal(MoneyUnit.BTC);
@@ -417,8 +401,7 @@ namespace NBitcoin
 				{
 					if (script is { })
 					{
-						var hdPubKey = keyManager.GetKeyForScriptPubKey(script);
-						if (hdPubKey is { })
+						if (keyManager.TryGetKeyForScriptPubKey(script, out HdPubKey? hdPubKey))
 						{
 							psbt.AddKeyPath(fp, hdPubKey, script);
 						}
@@ -428,8 +411,7 @@ namespace NBitcoin
 				// Add output keypaths.
 				foreach (var script in psbt.Outputs.Select(x => x.ScriptPubKey).ToArray())
 				{
-					var hdPubKey = keyManager.GetKeyForScriptPubKey(script);
-					if (hdPubKey is { })
+					if (keyManager.TryGetKeyForScriptPubKey(script, out HdPubKey? hdPubKey))
 					{
 						psbt.AddKeyPath(fp, hdPubKey, script);
 					}
@@ -444,7 +426,7 @@ namespace NBitcoin
 		}
 
 		/// <summary>
-		/// Tries to equip the PSBT with previous transactions with best effort.
+		/// Tries to equip the PSBT with previous transactions with best effort. Always <see cref="AddKeyPaths"/> first otherwise the prev tx won't be added.
 		/// </summary>
 		public static void AddPrevTxs(this PSBT psbt, AllTransactionStore transactionStore)
 		{
@@ -466,11 +448,43 @@ namespace NBitcoin
 		{
 			var mempoolMinFee = (decimal)me.MemPoolMinFee;
 
-			// Make sure to be prepare for mempool spikes.
+			// Make sure to be prepared for mempool spikes.
 			var spikeSanity = mempoolMinFee * 1.5m;
 
 			var sanityFee = FeeRate.Max(new FeeRate(Money.Coins(spikeSanity)), new FeeRate(2m));
 			return sanityFee;
+		}
+
+		public static int EstimateOutputVsize(this Script scriptPubKey) =>
+			new TxOut(Money.Zero, scriptPubKey).GetSerializedSize();
+
+		public static int EstimateInputVsize(this Script scriptPubKey) =>
+			scriptPubKey.IsScriptType(ScriptType.P2WPKH) switch
+			{
+				true => Constants.P2wpkhInputVirtualSize,
+				false => throw new NotImplementedException($"Size estimation isn't implemented for provided script type.")
+			};
+
+		public static Money EffectiveCost(this TxOut output, FeeRate feeRate) =>
+			output.Value + feeRate.GetFee(output.ScriptPubKey.EstimateOutputVsize());
+
+		public static Money EffectiveValue(this Coin coin, FeeRate feeRate) =>
+			coin.Amount - feeRate.GetFee(coin.ScriptPubKey.EstimateInputVsize());
+
+		public static Money EffectiveValue(this SmartCoin coin, FeeRate feeRate) =>
+			EffectiveValue(coin.Coin, feeRate);
+
+		public static T FromBytes<T>(byte[] input) where T : IBitcoinSerializable, new()
+		{
+			BitcoinStream inputStream = new(input);
+			var instance = new T();
+			inputStream.ReadWrite(instance);
+			if (inputStream.Inner.Length != inputStream.Inner.Position)
+			{
+				throw new FormatException("Expected end of stream");
+			}
+
+			return instance;
 		}
 	}
 }

@@ -1,5 +1,6 @@
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using System.Diagnostics.CodeAnalysis;
 
 namespace WalletWasabi.Gui.Rpc
 {
@@ -33,6 +34,7 @@ namespace WalletWasabi.Gui.Rpc
 		/// Gets a value indicating whether the JsonRpcRequest is a notification request
 		/// which means the client is not interested in receiving a response.
 		/// </summary>
+		[MemberNotNullWhen(returnValue: false, nameof(Id))]
 		public bool IsNotification => Id is null;
 
 		/// <summary>
@@ -77,7 +79,7 @@ namespace WalletWasabi.Gui.Rpc
 		/// Parses the json rpc request giving back the deserialized JsonRpcRequest instance.
 		/// Return true if the deserialization was successful, otherwise false.
 		/// </summary>
-		public static bool TryParse(string rawJson, out JsonRpcRequest[] requests, out bool isBatch)
+		public static bool TryParse(string rawJson, [NotNullWhen(true)] out JsonRpcRequest[]? requests, out bool isBatch)
 		{
 			try
 			{

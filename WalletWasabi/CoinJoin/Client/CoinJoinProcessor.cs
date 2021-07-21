@@ -1,3 +1,4 @@
+using NBitcoin;
 using NBitcoin.RPC;
 using Nito.AsyncEx;
 using System;
@@ -19,10 +20,11 @@ namespace WalletWasabi.CoinJoin.Client
 	{
 		private volatile bool _disposedValue = false; // To detect redundant calls
 
-		public CoinJoinProcessor(WasabiSynchronizer synchronizer, WalletManager walletManager, IRPCClient rpc)
+		public CoinJoinProcessor(Network network, WasabiSynchronizer synchronizer, WalletManager walletManager, IRPCClient rpc)
 		{
 			Synchronizer = Guard.NotNull(nameof(synchronizer), synchronizer);
 			WalletManager = Guard.NotNull(nameof(walletManager), walletManager);
+			Network = network;
 			RpcClient = rpc;
 			ProcessLock = new AsyncLock();
 			Synchronizer.ResponseArrived += Synchronizer_ResponseArrivedAsync;
@@ -30,6 +32,7 @@ namespace WalletWasabi.CoinJoin.Client
 
 		public WasabiSynchronizer Synchronizer { get; }
 		public WalletManager WalletManager { get; }
+		public Network Network { get; }
 		public IRPCClient RpcClient { get; private set; }
 		private AsyncLock ProcessLock { get; }
 
@@ -47,9 +50,8 @@ namespace WalletWasabi.CoinJoin.Client
 
 					var txsNotKnownByAWallet = WalletManager.FilterUnknownCoinjoins(unconfirmedCoinJoinHashes);
 
-					using var client = Synchronizer.WasabiClientFactory.NewBackendClient();
-
-					var unconfirmedCoinJoins = await client.GetTransactionsAsync(Synchronizer.Network, txsNotKnownByAWallet, CancellationToken.None).ConfigureAwait(false);
+					var client = Synchronizer.HttpClientFactory.SharedWasabiClient;
+					var unconfirmedCoinJoins = await client.GetTransactionsAsync(Network, txsNotKnownByAWallet, CancellationToken.None).ConfigureAwait(false);
 
 					foreach (var tx in unconfirmedCoinJoins.Select(x => new SmartTransaction(x, Height.Mempool)))
 					{

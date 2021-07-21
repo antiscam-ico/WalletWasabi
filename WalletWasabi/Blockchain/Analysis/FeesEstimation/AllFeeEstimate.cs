@@ -8,54 +8,63 @@ using WalletWasabi.Helpers;
 
 namespace WalletWasabi.Blockchain.Analysis.FeesEstimation
 {
+	/// <summary>
+	/// Estimates for 1w, 3d, 1d, 12h, 6h, 3h, 1h, 30m, 20m.
+	/// </summary>
 	[JsonObject(MemberSerialization.OptIn)]
 	public class AllFeeEstimate : IEquatable<AllFeeEstimate>
 	{
 		[JsonConstructor]
 		public AllFeeEstimate(EstimateSmartFeeMode type, IDictionary<int, int> estimations, bool isAccurate)
 		{
-			Create(type, estimations, isAccurate);
+			Guard.NotNullOrEmpty(nameof(estimations), estimations);
+
+			Type = type;
+			IsAccurate = isAccurate;
+
+			var targets = Constants.ConfirmationTargets.Prepend(1).ToArray();
+			var targetRanges = targets.Skip(1).Zip(targets.Skip(1).Prepend(0), (x, y) => (Start: y, End: x));
+
+			var filteredEstimations = estimations
+				.Where(x => x.Key >= targets[0] && x.Key <= targets[^1])
+				.OrderBy(x => x.Key)
+				.Select(x => (ConfirmationTarget: x.Key, FeeRate: x.Value, Range: targetRanges.First(y => y.Start < x.Key && x.Key <= y.End)))
+				.GroupBy(x => x.Range, y => y, (x, y) => (Range: x, BestEstimation: y.Last()))
+				.Select(x => (ConfirmationTarget: x.Range.End, x.BestEstimation.FeeRate));
+
+			// Make sure values are unique and in the correct order and feerates are consistently decreasing.
+			Estimations = new Dictionary<int, int>();
+			var lastFeeRate = int.MaxValue;
+			foreach (var estimation in filteredEstimations)
+			{
+				// Otherwise it's inconsistent data.
+				if (lastFeeRate > estimation.FeeRate)
+				{
+					lastFeeRate = estimation.FeeRate;
+					Estimations.TryAdd(estimation.ConfirmationTarget, estimation.FeeRate);
+				}
+			}
 		}
 
 		public AllFeeEstimate(AllFeeEstimate other, bool isAccurate)
+			: this(other.Type, other.Estimations, isAccurate)
 		{
-			Create(other.Type, other.Estimations, isAccurate);
 		}
 
 		[JsonProperty]
-		public EstimateSmartFeeMode Type { get; private set; }
+		public EstimateSmartFeeMode Type { get; }
 
 		/// <summary>
 		/// Gets a value indicating whether the fee has been fetched from a fully synced node.
 		/// </summary>
 		[JsonProperty]
-		public bool IsAccurate { get; private set; }
+		public bool IsAccurate { get; set; }
 
 		/// <summary>
 		/// Gets the fee estimations: int: fee target, int: satoshi/vByte
 		/// </summary>
 		[JsonProperty]
-		public Dictionary<int, int> Estimations { get; private set; }
-
-		private void Create(EstimateSmartFeeMode type, IDictionary<int, int> estimations, bool isAccurate)
-		{
-			Type = type;
-			IsAccurate = isAccurate;
-			Guard.NotNullOrEmpty(nameof(estimations), estimations);
-			Estimations = new Dictionary<int, int>();
-
-			// Make sure values are unique and in the correct order and feerates are consistently decreasing.
-			var lastFeeRate = int.MaxValue;
-			foreach (KeyValuePair<int, int> estimation in estimations.OrderBy(x => x.Key))
-			{
-				// Otherwise it's inconsistent data.
-				if (lastFeeRate > estimation.Value)
-				{
-					lastFeeRate = estimation.Value;
-					Estimations.TryAdd(estimation.Key, estimation.Value);
-				}
-			}
-		}
+		public Dictionary<int, int> Estimations { get; }
 
 		public FeeRate GetFeeRate(int feeTarget)
 		{

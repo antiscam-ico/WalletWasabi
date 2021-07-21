@@ -6,6 +6,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
+using WalletWasabi.Helpers;
 
 namespace WalletWasabi.Packager
 {
@@ -33,7 +34,7 @@ namespace WalletWasabi.Packager
 			var workingDir = Path.Combine(desktopPath, "wasabiTemp");
 			var dmgPath = Path.Combine(workingDir, "dmg");
 			var unzippedPath = Path.Combine(workingDir, "unzipped");
-			var appName = "Wasabi Wallet.app";
+			var appName = $"{Constants.AppName}.app";
 			var appPath = Path.Combine(dmgPath, appName);
 			var appContentsPath = Path.Combine(appPath, "Contents");
 			var appMacOsPath = Path.Combine(appContentsPath, "MacOS");
@@ -215,15 +216,17 @@ namespace WalletWasabi.Packager
 				process.WaitForExit();
 			}
 
-			var hdutilCreateArgs = string.Join(" ", new string[]
-			{
-				"create",
-				$"\"{dmgUnzippedFilePath}\"",
-				"-ov",
-				$"-volname \"Wasabi Wallet\"",
-				"-fs HFS+",
-				$"-srcfolder \"{dmgPath}\""
-			});
+			var hdutilCreateArgs = string.Join(
+				" ",
+				new string[]
+				{
+					"create",
+					$"\"{dmgUnzippedFilePath}\"",
+					"-ov",
+					$"-volname \"Wasabi Wallet\"",
+					"-fs HFS+",
+					$"-srcfolder \"{dmgPath}\""
+				});
 
 			using (var process = Process.Start(new ProcessStartInfo
 			{
@@ -235,13 +238,15 @@ namespace WalletWasabi.Packager
 				process.WaitForExit();
 			}
 
-			var hdutilConvertArgs = string.Join(" ", new string[]
-			{
-				"convert",
-				$"\"{dmgUnzippedFilePath}\"",
-				"-format UDZO",
-				$"-o \"{dmgFilePath}\""
-			});
+			var hdutilConvertArgs = string.Join(
+				" ",
+				new string[]
+				{
+					"convert",
+					$"\"{dmgUnzippedFilePath}\"",
+					"-format UDZO",
+					$"-o \"{dmgFilePath}\""
+				});
 
 			using (var process = Process.Start(new ProcessStartInfo
 			{
@@ -339,7 +344,7 @@ namespace WalletWasabi.Packager
 				throw new InvalidOperationException("Cannot get uploadId. Notarization failed.");
 			}
 
-			Stopwatch sw = new Stopwatch();
+			Stopwatch sw = new();
 			sw.Start();
 			while (true) // Wait for the notarization.
 			{

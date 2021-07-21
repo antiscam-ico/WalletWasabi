@@ -108,11 +108,6 @@ namespace System
 		/// </summary>
 		public static string ToHex(params byte[] bytes)
 		{
-			if (bytes is null)
-			{
-				return null;
-			}
-
 			if (bytes.Length == 0)
 			{
 				return "";
@@ -139,11 +134,6 @@ namespace System
 		/// </summary>
 		public static byte[] FromHex(string hex)
 		{
-			if (hex is null)
-			{
-				return null;
-			}
-
 			if (string.IsNullOrWhiteSpace(hex))
 			{
 				return Array.Empty<byte>();

@@ -8,6 +8,7 @@ using WalletWasabi.Crypto.Randomness;
 using WalletWasabi.Crypto.StrobeProtocol;
 using WalletWasabi.Crypto.ZeroKnowledge.LinearRelation;
 using WalletWasabi.Helpers;
+using WalletWasabi.WabiSabi;
 
 namespace WalletWasabi.Crypto.ZeroKnowledge
 {
@@ -36,7 +37,7 @@ namespace WalletWasabi.Crypto.ZeroKnowledge
 		/// the Merlin website for more details on why.
 		/// </remarks>
 		public Transcript(byte[] label)
-			: this(new Strobe128("WabiSabi_v1.0"))
+			: this(new Strobe128(ProtocolConstants.WabiSabiProtocolIdentifier))
 		{
 			AddMessage(DomainSeparatorTag, label);
 		}
@@ -49,18 +50,16 @@ namespace WalletWasabi.Crypto.ZeroKnowledge
 
 		// Generate synthetic nonce using current state combined with additional randomness.
 		public SyntheticSecretNonceProvider CreateSyntheticSecretNonceProvider(IEnumerable<Scalar> secrets, WasabiRandom random)
-			=> new SyntheticSecretNonceProvider(_strobe.MakeCopy(), secrets, random);
+			=> new(_strobe.MakeCopy(), secrets, random);
 
 		public void CommitPublicNonces(IEnumerable<GroupElement> publicNonces)
 		{
-			CryptoGuard.NotNullOrInfinity(nameof(publicNonces), publicNonces);
+			Guard.NotNullOrInfinity(nameof(publicNonces), publicNonces);
 			AddMessages(PublicNonceTag, publicNonces.Select(x => x.ToBytes()));
 		}
 
-		public void CommitStatement(Statement statement)
+		internal void CommitStatement(Statement statement)
 		{
-			Guard.NotNull(nameof(statement.Generators), statement.Generators);
-			Guard.NotNull(nameof(statement.PublicPoints), statement.PublicPoints);
 			AddMessages(StatementTag, statement.PublicPoints.Select(x => x.ToBytes()).Concat(statement.Generators.Select(x => x.ToBytes())));
 		}
 

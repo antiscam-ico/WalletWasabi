@@ -97,7 +97,7 @@ namespace WalletWasabi.Tests.UnitTests
 			}
 
 			using var cache = new MemoryCache(new MemoryCacheOptions());
-			var expireKey1 = new CancellationTokenSource();
+			using var expireKey1 = new CancellationTokenSource();
 
 			var options = new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(10) };
 			options.AddExpirationToken(new CancellationChangeToken(expireKey1.Token));
@@ -176,9 +176,9 @@ namespace WalletWasabi.Tests.UnitTests
 
 			if (result2 != Value2)
 			{
-				Assert.False(true, $"{nameof(result2)} value is '{result2}' instead of '{Value2}'. " +
-					$"Debug info: Wait time was: {elapsedMilliseconds} ms. " +
-					$"Previous values: {nameof(result0)}='{result0}', {nameof(result1)}='{result1}'");
+				Assert.False(
+					true,
+					$"{nameof(result2)} value is '{result2}' instead of '{Value2}'. Debug info: Wait time was: {elapsedMilliseconds} ms. Previous values: {nameof(result0)}='{result0}', {nameof(result1)}='{result1}'");
 			}
 		}
 
@@ -222,8 +222,8 @@ namespace WalletWasabi.Tests.UnitTests
 		public async Task LockTestsAsync()
 		{
 			TimeSpan timeout = TimeSpan.FromSeconds(10);
-			using SemaphoreSlim trigger = new SemaphoreSlim(0, 1);
-			using SemaphoreSlim signal = new SemaphoreSlim(0, 1);
+			using SemaphoreSlim trigger = new(0, 1);
+			using SemaphoreSlim signal = new(0, 1);
 
 			async Task<string> WaitUntilTrigger(string argument)
 			{

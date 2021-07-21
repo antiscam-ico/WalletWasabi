@@ -25,7 +25,6 @@ namespace WalletWasabi.Gui.Tabs
 	internal class SettingsViewModel : WasabiDocumentTabViewModel
 	{
 		private Network _network;
-		private string _torSocks5EndPoint;
 		private string _bitcoinP2pEndPoint;
 		private string _localBitcoinCoreDataDir;
 		private bool _autocopy;
@@ -52,7 +51,6 @@ namespace WalletWasabi.Gui.Tabs
 			this.ValidateProperty(x => x.FinePrivacyLevel, ValidateFinePrivacyLevel);
 			this.ValidateProperty(x => x.StrongPrivacyLevel, ValidateStrongPrivacyLevel);
 			this.ValidateProperty(x => x.DustThreshold, ValidateDustThreshold);
-			this.ValidateProperty(x => x.TorSocks5EndPoint, ValidateTorSocks5EndPoint);
 			this.ValidateProperty(x => x.BitcoinP2pEndPoint, ValidateBitcoinP2pEndPoint);
 
 			Autocopy = Global.UiConfig.Autocopy;
@@ -63,7 +61,6 @@ namespace WalletWasabi.Gui.Tabs
 			config.LoadOrCreateDefaultFile();
 
 			_network = config.Network;
-			_torSocks5EndPoint = config.TorSocks5EndPoint.ToString(-1);
 			UseTor = config.UseTor;
 			TerminateTorOnExit = config.TerminateTorOnExit;
 			StartLocalBitcoinCoreOnStartup = config.StartLocalBitcoinCoreOnStartup;
@@ -75,7 +72,7 @@ namespace WalletWasabi.Gui.Tabs
 
 			_dustThreshold = config.DustThreshold.ToString();
 
-			_bitcoinP2pEndPoint = config.GetP2PEndpoint().ToString(defaultPort: -1);
+			_bitcoinP2pEndPoint = config.GetBitcoinP2pEndPoint().ToString(defaultPort: -1);
 			_localBitcoinCoreDataDir = config.LocalBitcoinCoreDataDir;
 
 			IsModified = !Global.Config.AreDeepEqual(config);
@@ -194,12 +191,6 @@ namespace WalletWasabi.Gui.Tabs
 			set => this.RaiseAndSetIfChanged(ref _network, value);
 		}
 
-		public string TorSocks5EndPoint
-		{
-			get => _torSocks5EndPoint;
-			set => this.RaiseAndSetIfChanged(ref _torSocks5EndPoint, value);
-		}
-
 		public string BitcoinP2pEndPoint
 		{
 			get => _bitcoinP2pEndPoint;
@@ -308,12 +299,6 @@ namespace WalletWasabi.Gui.Tabs
 					.DisposeWith(disposables);
 				this.RaisePropertyChanged(nameof(IsPinSet)); // Fire now otherwise the button won't update for restart.
 
-				Global.UiConfig.WhenAnyValue(x => x.LockScreenPinHash, x => x.Autocopy, x => x.IsCustomFee, x => x.IsCustomChangeAddress)
-					.Throttle(TimeSpan.FromSeconds(1))
-					.ObserveOn(RxApp.TaskpoolScheduler)
-					.Subscribe(_ => Global.UiConfig.ToFile())
-					.DisposeWith(disposables);
-
 				Global.UiConfig.WhenAnyValue(x => x.FeeDisplayFormat)
 					.ObserveOn(RxApp.MainThreadScheduler)
 					.Subscribe(x => SelectedFeeDisplayFormat = (FeeDisplayFormat)x)
@@ -363,13 +348,9 @@ namespace WalletWasabi.Gui.Tabs
 					config.LoadFile();
 					if (Network == config.Network)
 					{
-						if (EndPointParser.TryParse(TorSocks5EndPoint, Constants.DefaultTorSocksPort, out EndPoint torEp))
+						if (EndPointParser.TryParse(BitcoinP2pEndPoint, network.DefaultPort, out EndPoint? p2pEp))
 						{
-							config.TorSocks5EndPoint = torEp;
-						}
-						if (EndPointParser.TryParse(BitcoinP2pEndPoint, network.DefaultPort, out EndPoint p2pEp))
-						{
-							config.SetP2PEndpoint(p2pEp);
+							config.SetBitcoinP2pEndpoint(p2pEp);
 						}
 						config.UseTor = UseTor;
 						config.TerminateTorOnExit = TerminateTorOnExit;
@@ -384,7 +365,7 @@ namespace WalletWasabi.Gui.Tabs
 					else
 					{
 						config.Network = Network;
-						BitcoinP2pEndPoint = config.GetP2PEndpoint().ToString(defaultPort: -1);
+						BitcoinP2pEndPoint = config.GetBitcoinP2pEndPoint().ToString(defaultPort: -1);
 					}
 					config.ToFile();
 					IsModified = !Global.Config.AreDeepEqual(config);
@@ -410,9 +391,6 @@ namespace WalletWasabi.Gui.Tabs
 
 		private void ValidateDustThreshold(IValidationErrors errors)
 			=> ValidateDustThreshold(errors, DustThreshold, whiteSpaceOk: true);
-
-		private void ValidateTorSocks5EndPoint(IValidationErrors errors)
-			=> ValidateEndPoint(errors, TorSocks5EndPoint, Constants.DefaultTorSocksPort, whiteSpaceOk: true);
 
 		private void ValidateBitcoinP2pEndPoint(IValidationErrors errors)
 			=> ValidateEndPoint(errors, BitcoinP2pEndPoint, Network.DefaultPort, whiteSpaceOk: true);

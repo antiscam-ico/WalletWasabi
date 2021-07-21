@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using NBitcoin;
 using NBitcoin.RPC;
@@ -7,18 +9,24 @@ using WalletWasabi.BitcoinCore.Rpc.Models;
 
 namespace WalletWasabi.Tests.UnitTests
 {
-	internal class MockRpcClient : IRPCClient
+	public class MockRpcClient : IRPCClient
 	{
 		public Func<Task<uint256>> OnGetBestBlockHashAsync { get; set; }
+		public Func<uint256, int, bool, GetTxOutResponse?> OnGetTxOutAsync { get; set; }
 		public Func<uint256, Task<Block>> OnGetBlockAsync { get; set; }
 		public Func<int, Task<uint256>> OnGetBlockHashAsync { get; set; }
 		public Func<uint256, Task<BlockHeader>> OnGetBlockHeaderAsync { get; set; }
 		public Func<Task<BlockchainInfo>> OnGetBlockchainInfoAsync { get; set; }
 		public Func<uint256, Task<VerboseBlockInfo>> OnGetVerboseBlockAsync { get; set; }
+		public Func<Transaction, uint256> OnSendRawTransactionAsync { get; set; }
 		public Func<Task<MemPoolInfo>> OnGetMempoolInfoAsync { get; set; }
-
+		public Func<Task<uint256[]>> OnGetRawMempoolAsync { get; set; }
+		public Func<uint256, bool, Task<Transaction>> OnGetRawTransactionAsync { get; set; }
+		public Func<int, EstimateSmartFeeMode, Task<EstimateSmartFeeResponse>> OnEstimateSmartFeeAsync { get; set; }
+		public Func<Task<PeerInfo[]>> OnGetPeersInfoAsync { get; set; }
+		public Func<int, BitcoinAddress, Task<uint256[]>> OnGenerateToAddressAsync { get; set; }
 		public Network Network { get; set; } = Network.RegTest;
-		public RPCCredentialString CredentialString => new RPCCredentialString();
+		public RPCCredentialString CredentialString => new();
 
 		public Task<uint256> GetBestBlockHashAsync()
 		{
@@ -60,7 +68,7 @@ namespace WalletWasabi.Tests.UnitTests
 			throw new NotImplementedException();
 		}
 
-		public Task<MemPoolInfo> GetMempoolInfoAsync()
+		public Task<MemPoolInfo> GetMempoolInfoAsync(CancellationToken cancel = default)
 		{
 			return OnGetMempoolInfoAsync();
 		}
@@ -72,27 +80,28 @@ namespace WalletWasabi.Tests.UnitTests
 
 		public Task<PeerInfo[]> GetPeersInfoAsync()
 		{
-			throw new NotImplementedException();
+			return OnGetPeersInfoAsync();
 		}
 
 		public Task<uint256[]> GetRawMempoolAsync()
 		{
-			throw new NotImplementedException();
+			return OnGetRawMempoolAsync();
 		}
 
 		public Task<Transaction> GetRawTransactionAsync(uint256 txid, bool throwIfNotFound = true)
 		{
-			throw new NotImplementedException();
+			return OnGetRawTransactionAsync(txid, throwIfNotFound);
 		}
 
-		public GetTxOutResponse GetTxOut(uint256 txid, int index, bool includeMempool = true)
+		public Task<IEnumerable<Transaction>> GetRawTransactionsAsync(IEnumerable<uint256> txids, CancellationToken cancel)
 		{
 			throw new NotImplementedException();
 		}
 
-		public Task<GetTxOutResponse> GetTxOutAsync(uint256 txid, int index, bool includeMempool = true)
+		public Task<GetTxOutResponse?> GetTxOutAsync(uint256 txid, int index, bool includeMempool = true)
 		{
-			throw new NotImplementedException();
+			var resp = OnGetTxOutAsync(txid, index, includeMempool);
+			return Task.FromResult(resp);
 		}
 
 		public Task InvalidateBlockAsync(uint256 blockHash)
@@ -107,12 +116,12 @@ namespace WalletWasabi.Tests.UnitTests
 
 		public IRPCClient PrepareBatch()
 		{
-			throw new NotImplementedException();
+			return this;
 		}
 
 		public Task SendBatchAsync()
 		{
-			throw new NotImplementedException();
+			return Task.CompletedTask;
 		}
 
 		public Task<EstimateSmartFeeResponse> TryEstimateSmartFeeAsync(int confirmationTarget, EstimateSmartFeeMode estimateMode = EstimateSmartFeeMode.Conservative)
@@ -127,10 +136,11 @@ namespace WalletWasabi.Tests.UnitTests
 
 		public Task<uint256> SendRawTransactionAsync(Transaction transaction)
 		{
-			throw new NotImplementedException();
+			var resp = OnSendRawTransactionAsync(transaction);
+			return Task.FromResult(resp);
 		}
 
-		public Task<uint256> SendToAddressAsync(BitcoinAddress address, Money amount, string commentTx = null, string commentDest = null, bool subtractFeeFromAmount = false, bool replaceable = false)
+		public Task<uint256> SendToAddressAsync(BitcoinAddress address, Money amount, string? commentTx = null, string? commentDest = null, bool subtractFeeFromAmount = false, bool replaceable = false)
 		{
 			throw new NotImplementedException();
 		}
@@ -172,10 +182,15 @@ namespace WalletWasabi.Tests.UnitTests
 
 		public Task<EstimateSmartFeeResponse> EstimateSmartFeeAsync(int confirmationTarget, EstimateSmartFeeMode estimateMode = EstimateSmartFeeMode.Conservative)
 		{
-			throw new NotImplementedException();
+			return OnEstimateSmartFeeAsync(confirmationTarget, estimateMode);
 		}
 
 		public Task<uint256[]> GenerateToAddressAsync(int nBlocks, BitcoinAddress address)
+		{
+			return OnGenerateToAddressAsync(nBlocks, address);
+		}
+
+		public Task<RPCClient> CreateWalletAsync(string walletNameOrPath, CreateWalletOptions? options = null)
 		{
 			throw new NotImplementedException();
 		}

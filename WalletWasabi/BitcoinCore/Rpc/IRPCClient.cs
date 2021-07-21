@@ -1,6 +1,9 @@
 using NBitcoin;
 using NBitcoin.RPC;
 using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
 using WalletWasabi.BitcoinCore.Rpc.Models;
 
@@ -35,13 +38,13 @@ namespace WalletWasabi.BitcoinCore.Rpc
 
 		Task<uint256[]> GetRawMempoolAsync();
 
-		Task<MemPoolInfo> GetMempoolInfoAsync();
+		Task<MemPoolInfo> GetMempoolInfoAsync(CancellationToken cancel = default);
 
 		Task<MempoolAcceptResult> TestMempoolAcceptAsync(Transaction transaction, bool allowHighFees = false);
 
 		Task<EstimateSmartFeeResponse> EstimateSmartFeeAsync(int confirmationTarget, EstimateSmartFeeMode estimateMode = EstimateSmartFeeMode.Conservative);
 
-		Task<GetTxOutResponse> GetTxOutAsync(uint256 txid, int index, bool includeMempool = true);
+		Task<GetTxOutResponse?> GetTxOutAsync(uint256 txid, int index, bool includeMempool = true);
 
 		IRPCClient PrepareBatch();
 
@@ -56,6 +59,8 @@ namespace WalletWasabi.BitcoinCore.Rpc
 		Task<BumpResponse> BumpFeeAsync(uint256 txid);
 
 		Task<Transaction> GetRawTransactionAsync(uint256 txid, bool throwIfNotFound = true);
+
+		Task<IEnumerable<Transaction>> GetRawTransactionsAsync(IEnumerable<uint256> txids, CancellationToken cancel);
 
 		Task<int> GetBlockCountAsync();
 
@@ -72,5 +77,7 @@ namespace WalletWasabi.BitcoinCore.Rpc
 		Task<VerboseBlockInfo> GetVerboseBlockAsync(uint256 blockId);
 
 		Task<uint256[]> GenerateToAddressAsync(int nBlocks, BitcoinAddress address);
+
+		Task<RPCClient> CreateWalletAsync(string walletNameOrPath, CreateWalletOptions? options = null);
 	}
 }

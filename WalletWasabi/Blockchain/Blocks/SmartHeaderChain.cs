@@ -12,22 +12,16 @@ namespace WalletWasabi.Blockchain.Blocks
 	public class SmartHeaderChain : NotifyPropertyChangedBase
 	{
 		private uint _tipHeight;
-		private SmartHeader _tip;
-		private uint256 _tipHash;
+		private SmartHeader? _tip;
+		private uint256? _tipHash;
 		private uint _serverTipHeight;
 		private int _hashesLeft;
 		private int _hashesCount;
 
-		public SmartHeaderChain()
-		{
-			Chain = new Dictionary<uint, SmartHeader>();
-			Lock = new object();
-		}
+		private Dictionary<uint, SmartHeader> Chain { get; } = new Dictionary<uint, SmartHeader>();
+		private object Lock { get; } = new object();
 
-		private Dictionary<uint, SmartHeader> Chain { get; }
-		private object Lock { get; }
-
-		public SmartHeader Tip
+		public SmartHeader? Tip
 		{
 			get => _tip;
 			private set => RaiseAndSetIfChanged(ref _tip, value);
@@ -39,7 +33,7 @@ namespace WalletWasabi.Blockchain.Blocks
 			private set => RaiseAndSetIfChanged(ref _tipHeight, value);
 		}
 
-		public uint256 TipHash
+		public uint256? TipHash
 		{
 			get => _tipHash;
 			private set => RaiseAndSetIfChanged(ref _tipHash, value);
@@ -67,7 +61,7 @@ namespace WalletWasabi.Blockchain.Blocks
 		{
 			lock (Lock)
 			{
-				if (Chain.TryGetValue(TipHeight, out SmartHeader lastHeader))
+				if (Chain.TryGetValue(TipHeight, out var lastHeader))
 				{
 					if (lastHeader.BlockHash != header.PrevHash)
 					{
@@ -85,7 +79,7 @@ namespace WalletWasabi.Blockchain.Blocks
 			}
 		}
 
-		private void SetTip(SmartHeader header)
+		private void SetTip(SmartHeader? header)
 		{
 			Tip = header;
 			TipHeight = header?.Height ?? default;
@@ -133,40 +127,6 @@ namespace WalletWasabi.Blockchain.Blocks
 			lock (Lock)
 			{
 				return Chain.Select(x => (x.Key, x.Value)).ToArray();
-			}
-		}
-
-		public bool TryGetHeader(uint height, out SmartHeader header)
-		{
-			header = null;
-			lock (Lock)
-			{
-				if (Chain.ContainsKey(height))
-				{
-					header = Chain[height];
-					return true;
-				}
-				else
-				{
-					return false;
-				}
-			}
-		}
-
-		public bool TryGetHeight(uint256 hash, out uint height)
-		{
-			lock (Lock)
-			{
-				height = Chain.FirstOrDefault(x => x.Value.BlockHash == hash).Key;
-
-				// Default int will be 0. We do not know if this refers to the 0th hash or it just means the hash was not found.
-				// So let's check if the height contains or not.
-				// If the given height is 0, then check if the chain has a key with 0. If it does not have, then return false. If it has, check if the hash is the same or not.
-				if (height == 0 && (!Chain.ContainsKey(0) || Chain[0].BlockHash != hash))
-				{
-					return false;
-				}
-				return true;
 			}
 		}
 	}

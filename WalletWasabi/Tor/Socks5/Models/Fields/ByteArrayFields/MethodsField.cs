@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using WalletWasabi.Helpers;
 using WalletWasabi.Tor.Socks5.Models.Bases;
 using WalletWasabi.Tor.Socks5.Models.Fields.OctetFields;
@@ -8,8 +7,6 @@ namespace WalletWasabi.Tor.Socks5.Models.Fields.ByteArrayFields
 {
 	public class MethodsField : ByteArraySerializableBase
 	{
-		#region Constructors
-
 		public MethodsField(byte[] bytes)
 		{
 			Guard.NotNullOrEmpty(nameof(bytes), bytes);
@@ -37,30 +34,8 @@ namespace WalletWasabi.Tor.Socks5.Models.Fields.ByteArrayFields
 			}
 		}
 
-		#endregion Constructors
-
-		#region PropertiesAndMembers
-
 		private byte[] Bytes { get; }
 
-		public IEnumerable<MethodField> Methods
-		{
-			get
-			{
-				foreach (var b in Bytes)
-				{
-					var method = new MethodField(b);
-					yield return method;
-				}
-			}
-		}
-
-		#endregion PropertiesAndMembers
-
-		#region Serialization
-
 		public override byte[] ToBytes() => Bytes;
-
-		#endregion Serialization
 	}
 }

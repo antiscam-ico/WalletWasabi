@@ -106,7 +106,7 @@ namespace WalletWasabi.Gui.Tabs.WalletManager.HardwareWallets
 					}
 					else
 					{
-						Version coldCardVersion = new Version(coldCardVersionString);
+						Version coldCardVersion = new(coldCardVersionString);
 
 						if (coldCardVersion == new Version("2.1.0")) // Should never happen though.
 						{
@@ -222,7 +222,7 @@ namespace WalletWasabi.Gui.Tabs.WalletManager.HardwareWallets
 			LoadButtonText = text;
 		}
 
-		public async Task<KeyManager> LoadKeyManagerAsync()
+		public async Task<KeyManager?> LoadKeyManagerAsync()
 		{
 			try
 			{
@@ -254,8 +254,8 @@ namespace WalletWasabi.Gui.Tabs.WalletManager.HardwareWallets
 						using var ctsSetup = new CancellationTokenSource(TimeSpan.FromMinutes(21));
 
 						// Trezor T doesn't require interactive mode.
-						if (selectedWallet.HardwareWalletInfo.Model == HardwareWalletModels.Trezor_T
-							|| selectedWallet.HardwareWalletInfo.Model == HardwareWalletModels.Trezor_T_Simulator)
+						if (selectedWallet.HardwareWalletInfo.Model is HardwareWalletModels.Trezor_T
+							or HardwareWalletModels.Trezor_T_Simulator)
 						{
 							await client.SetupAsync(selectedWallet.HardwareWalletInfo.Model, selectedWallet.HardwareWalletInfo.Path, false, ctsSetup.Token);
 						}
@@ -318,11 +318,9 @@ namespace WalletWasabi.Gui.Tabs.WalletManager.HardwareWallets
 					MainWindowViewModel.Instance.StatusBar.TryRemoveStatus(StatusType.AcquiringXpubFromHardwareWallet);
 				}
 
-				if (TryFindWalletByExtPubKey(extPubKey, out string wn))
-				{
-					walletName = wn.TrimEnd(".json", StringComparison.OrdinalIgnoreCase);
-				}
-				else
+				walletName = WalletManager.GetWallets(true).FirstOrDefault(w => w.KeyManager.ExtPubKey == extPubKey)?.WalletName;
+
+				if (walletName is null)
 				{
 					var prefix = selectedWallet.HardwareWalletInfo?.Model.FriendlyName() ?? HardwareWalletModels.Unknown.FriendlyName();
 					walletName = WalletManager.WalletDirectories.GetNextWalletName(prefix);
@@ -424,16 +422,6 @@ namespace WalletWasabi.Gui.Tabs.WalletManager.HardwareWallets
 			{
 				IsHwWalletSearchTextVisible = false;
 			}
-		}
-
-		private bool TryFindWalletByExtPubKey(ExtPubKey extPubKey, out string walletName)
-		{
-			walletName = WalletManager.WalletDirectories
-				.EnumerateWalletFiles(includeBackupDir: false)
-				.FirstOrDefault(fi => KeyManager.TryGetExtPubKeyFromFile(fi.FullName, out ExtPubKey epk) && epk == extPubKey)
-				?.Name;
-
-			return walletName is { };
 		}
 	}
 }

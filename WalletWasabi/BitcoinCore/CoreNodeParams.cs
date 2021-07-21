@@ -12,7 +12,6 @@ namespace WalletWasabi.BitcoinCore
 		public CoreNodeParams(
 			Network network,
 			MempoolService mempoolService,
-			HostedServices hostedServices,
 			string dataDir,
 			bool tryRestart,
 			bool tryDeleteDataDir,
@@ -27,7 +26,6 @@ namespace WalletWasabi.BitcoinCore
 		{
 			Network = Guard.NotNull(nameof(network), network);
 			MempoolService = Guard.NotNull(nameof(mempoolService), mempoolService);
-			HostedServices = Guard.NotNull(nameof(hostedServices), hostedServices);
 			DataDir = Guard.NotNullOrEmptyOrWhitespace(nameof(dataDir), dataDir);
 			TryRestart = tryRestart;
 			TryDeleteDataDir = tryDeleteDataDir;
@@ -44,7 +42,6 @@ namespace WalletWasabi.BitcoinCore
 		public string DataDir { get; }
 		public Network Network { get; }
 		public MempoolService MempoolService { get; }
-		public HostedServices HostedServices { get; }
 		public bool TryRestart { get; }
 		public bool TryDeleteDataDir { get; }
 		public int? TxIndex { get; }
@@ -52,6 +49,17 @@ namespace WalletWasabi.BitcoinCore
 		public string MempoolReplacement { get; }
 		public string UserAgent { get; }
 		public Money FallbackFee { get; }
+		public int? Listen { get; set; }
+		public int? ListenOnion { get; set; }
+		public int? Discover { get; set; }
+		public int? DnsSeed { get; set; }
+		public int? FixedSeeds { get; set; }
+		public int? Upnp { get; set; }
+		public int? NatPmp { get; set; }
+		public int? PersistMempool { get; set; }
+		public int? RpcWorkQueue { get; set; }
+		public int? RpcThreads { get; set; }
+
 		public EndPointStrategy P2pEndPointStrategy { get; }
 		public EndPointStrategy RpcEndPointStrategy { get; }
 		public IMemoryCache Cache { get; }

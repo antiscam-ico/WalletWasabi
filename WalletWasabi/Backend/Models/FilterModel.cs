@@ -31,13 +31,13 @@ namespace WalletWasabi.Backend.Models
 
 			if (parts.Length < 5)
 			{
-				throw new ArgumentException(nameof(line), line);
+				throw new ArgumentException(line, nameof(line));
 			}
 
 			var blockHeight = uint.Parse(parts[0]);
 			var blockHash = uint256.Parse(parts[1]);
 			var filterData = Encoders.Hex.DecodeData(parts[2]);
-			GolombRiceFilter filter = new GolombRiceFilter(filterData, 20, 1 << 20);
+			GolombRiceFilter filter = new(filterData, 20, 1 << 20);
 			var prevBlockHash = uint256.Parse(parts[3]);
 			var blockTime = DateTimeOffset.FromUnixTimeSeconds(long.Parse(parts[4]));
 
@@ -48,13 +48,13 @@ namespace WalletWasabi.Backend.Models
 		{
 			var builder = new StringBuilder();
 			builder.Append(Header.Height);
-			builder.Append(":");
+			builder.Append(':');
 			builder.Append(Header.BlockHash);
-			builder.Append(":");
+			builder.Append(':');
 			builder.Append(Filter);
-			builder.Append(":");
+			builder.Append(':');
 			builder.Append(Header.PrevHash);
-			builder.Append(":");
+			builder.Append(':');
 			builder.Append(Header.BlockTime.ToUnixTimeSeconds());
 
 			return builder.ToString();

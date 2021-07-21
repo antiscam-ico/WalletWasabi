@@ -1,6 +1,10 @@
+using System;
 using Avalonia.Controls;
 using Newtonsoft.Json;
 using System.ComponentModel;
+using System.Reactive;
+using System.Reactive.Linq;
+using ReactiveUI;
 using WalletWasabi.Bases;
 using WalletWasabi.Gui.Converters;
 using WalletWasabi.Gui.Models.Sorting;
@@ -17,6 +21,10 @@ namespace WalletWasabi.Gui
 		private bool _isCustomChangeAddress;
 		private bool _autocopy;
 		private int _feeDisplayFormat;
+		private bool _darkModeEnabled;
+		private string? _lastSelectedWallet;
+		private string _windowState = "Normal";
+		private bool _runOnSystemStartup;
 
 		public UiConfig() : base()
 		{
@@ -24,11 +32,30 @@ namespace WalletWasabi.Gui
 
 		public UiConfig(string filePath) : base(filePath)
 		{
+			this.WhenAnyValue(
+					x => x.LockScreenPinHash,
+					x => x.Autocopy,
+					x => x.IsCustomFee,
+					x => x.IsCustomChangeAddress,
+					x => x.DarkModeEnabled,
+					x => x.FeeDisplayFormat,
+					x => x.LastSelectedWallet,
+					x => x.WindowState,
+					x => x.RunOnSystemStartup,
+					(_, _, _, _, _, _, _, _, _) => Unit.Default)
+				.Throttle(TimeSpan.FromMilliseconds(500))
+				.Skip(1) // Won't save on UiConfig creation.
+				.ObserveOn(RxApp.TaskpoolScheduler)
+				.Subscribe(_ => ToFile());
 		}
 
 		[JsonProperty(PropertyName = "WindowState")]
 		[JsonConverter(typeof(WindowStateAfterStartJsonConverter))]
-		public WindowState WindowState { get; internal set; } = WindowState.Normal;
+		public string WindowState
+		{
+			get => _windowState;
+			internal set => RaiseAndSetIfChanged(ref _windowState, value);
+		}
 
 		[DefaultValue(2)]
 		[JsonProperty(PropertyName = "FeeTarget", DefaultValueHandling = DefaultValueHandling.Populate)]
@@ -92,6 +119,30 @@ namespace WalletWasabi.Gui
 		{
 			get => _lockScreenPinHash;
 			set => RaiseAndSetIfChanged(ref _lockScreenPinHash, value);
+		}
+
+		[DefaultValue(true)]
+		[JsonProperty(PropertyName = "DarkModeEnabled", DefaultValueHandling = DefaultValueHandling.Populate)]
+		public bool DarkModeEnabled
+		{
+			get => _darkModeEnabled;
+			set => RaiseAndSetIfChanged(ref _darkModeEnabled, value);
+		}
+
+		[DefaultValue(null)]
+		[JsonProperty(PropertyName = "LastSelectedWallet", DefaultValueHandling = DefaultValueHandling.Populate)]
+		public string? LastSelectedWallet
+		{
+			get => _lastSelectedWallet;
+			set => RaiseAndSetIfChanged(ref _lastSelectedWallet, value);
+		}
+
+		[DefaultValue(false)]
+		[JsonProperty(PropertyName = "RunOnSystemStartup", DefaultValueHandling = DefaultValueHandling.Populate)]
+		public bool RunOnSystemStartup
+		{
+			get => _runOnSystemStartup;
+			set => RaiseAndSetIfChanged(ref _runOnSystemStartup, value);
 		}
 
 		[JsonProperty(PropertyName = "CoinListViewSortingPreference")]

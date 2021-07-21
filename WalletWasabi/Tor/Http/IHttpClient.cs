@@ -1,19 +1,47 @@
+using System;
 using System.Net.Http;
-using System.Security.Authentication;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace WalletWasabi.Tor.Http
 {
 	/// <summary>
-	/// Interface defining HTTP client capable of sending HTTP requests.
+	/// Interface defining HTTP client capable of sending either absolute or relative HTTP requests.
 	/// </summary>
+	/// <remarks>Relative HTTP requests are allowed only when <see cref="BaseUriGetter"/> returns non-<see langword="null"/> value.</remarks>
 	public interface IHttpClient
 	{
-		/// <summary>TLS protocols we support for both clearnet and Tor proxy.</summary>
-		static readonly SslProtocols SupportedSslProtocols = SslProtocols.Tls | SslProtocols.Tls11 | SslProtocols.Tls12;
+		Func<Uri>? BaseUriGetter { get; }
 
-		/// <inheritdoc cref="HttpClient.SendAsync(HttpRequestMessage, CancellationToken)"/>
+		/// <summary>Sends an HTTP(s) request.</summary>
+		/// <param name="request">HTTP request message to send.</param>
+		/// <param name="token">Cancellation token to cancel the asynchronous operation.</param>
 		Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token = default);
+
+		/// <exception cref="InvalidOperationException"/>
+		async Task<HttpResponseMessage> SendAsync(HttpMethod method, string relativeUri, HttpContent? content = null, CancellationToken cancel = default)
+		{
+			if (BaseUriGetter is null)
+			{
+				throw new InvalidOperationException($"{nameof(BaseUriGetter)} is not set.");
+			}
+
+			Uri? baseUri = BaseUriGetter.Invoke();
+
+			if (baseUri is null)
+			{
+				throw new InvalidOperationException("Base URI is not set.");
+			}
+
+			Uri requestUri = new(baseUri, relativeUri);
+			using HttpRequestMessage httpRequestMessage = new(method, requestUri);
+
+			if (content is { })
+			{
+				httpRequestMessage.Content = content;
+			}
+
+			return await SendAsync(httpRequestMessage, cancel).ConfigureAwait(false);
+		}
 	}
 }

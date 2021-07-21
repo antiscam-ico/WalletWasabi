@@ -10,26 +10,25 @@ using System.Threading;
 using System.Threading.Tasks;
 using WalletWasabi.CoinJoin.Common.Models;
 using WalletWasabi.Logging;
-using WalletWasabi.Tor.Exceptions;
-using WalletWasabi.Tor.Http.Bases;
+using WalletWasabi.Tor.Http;
 using WalletWasabi.Tor.Http.Extensions;
+using WalletWasabi.Tor.Socks5.Exceptions;
 using WalletWasabi.WebClients.Wasabi;
 using static WalletWasabi.Crypto.SchnorrBlinding;
 using UnblindedSignature = WalletWasabi.Crypto.UnblindedSignature;
 
 namespace WalletWasabi.CoinJoin.Client.Clients
 {
-	public abstract class AliceClientBase : TorDisposableBase
+	public abstract class AliceClientBase
 	{
-		/// <inheritdoc/>
 		protected AliceClientBase(
 			long roundId,
 			IEnumerable<BitcoinAddress> registeredAddresses,
 			IEnumerable<Requester> requesters,
 			Network network,
-			Func<Uri> baseUriAction,
-			EndPoint torSocks5EndPoint) : base(baseUriAction, torSocks5EndPoint)
+			IHttpClient httpClient)
 		{
+			HttpClient = httpClient;
 			RoundId = roundId;
 			RegisteredAddresses = registeredAddresses.ToArray();
 			Requesters = requesters.ToArray();
@@ -44,6 +43,8 @@ namespace WalletWasabi.CoinJoin.Client.Clients
 		public BitcoinAddress[] RegisteredAddresses { get; }
 		public Requester[] Requesters { get; }
 
+		public IHttpClient HttpClient { get; }
+
 		public static async Task<AliceClient4> CreateNewAsync(
 			long roundId,
 			IEnumerable<BitcoinAddress> registeredAddresses,
@@ -53,8 +54,7 @@ namespace WalletWasabi.CoinJoin.Client.Clients
 			BitcoinAddress changeOutput,
 			IEnumerable<BlindedOutputWithNonceIndex> blindedOutputScriptHashes,
 			IEnumerable<InputProofModel> inputs,
-			Func<Uri> baseUriAction,
-			EndPoint torSocks5EndPoint)
+			IHttpClient httpClient)
 		{
 			var request = new InputsRequest4
 			{
@@ -63,49 +63,45 @@ namespace WalletWasabi.CoinJoin.Client.Clients
 				ChangeOutputAddress = changeOutput,
 				Inputs = inputs
 			};
-			var client = new AliceClient4(roundId, registeredAddresses, signerPubKeys, requesters, network, baseUriAction, torSocks5EndPoint);
-			try
+			AliceClient4 client = new(roundId, registeredAddresses, signerPubKeys, requesters, network, httpClient);
+
+			// Correct it if forgot to set.
+			if (request.RoundId != roundId)
 			{
-				// Correct it if forgot to set.
-				if (request.RoundId != roundId)
+				if (request.RoundId == 0)
 				{
-					if (request.RoundId == 0)
-					{
-						request.RoundId = roundId;
-					}
-					else
-					{
-						throw new NotSupportedException($"InputRequest {nameof(roundId)} does not match to the provided {nameof(roundId)}: {request.RoundId} != {roundId}.");
-					}
+					request.RoundId = roundId;
 				}
-				using HttpResponseMessage response = await client.TorClient.SendAsync(HttpMethod.Post, $"/api/v{WasabiClient.ApiVersion}/btc/chaumiancoinjoin/inputs/", request.ToHttpStringContent()).ConfigureAwait(false);
-				if (response.StatusCode != HttpStatusCode.OK)
+				else
 				{
-					await response.ThrowRequestExceptionFromContentAsync().ConfigureAwait(false);
+					throw new NotSupportedException($"InputRequest {nameof(roundId)} does not match to the provided {nameof(roundId)}: {request.RoundId} != {roundId}.");
 				}
-
-				var inputsResponse = await response.Content.ReadAsJsonAsync<InputsResponse>().ConfigureAwait(false);
-
-				if (inputsResponse.RoundId != roundId) // This should never happen. If it does, that's a bug in the coordinator.
-				{
-					throw new NotSupportedException($"Coordinator assigned us to the wrong round: {inputsResponse.RoundId}. Requested round: {roundId}.");
-				}
-
-				client.UniqueId = inputsResponse.UniqueId;
-				Logger.LogInfo($"Round ({client.RoundId}), Alice ({client.UniqueId}): Registered {request.Inputs.Count()} inputs.");
-
-				return client;
 			}
-			catch
+
+			using StringContent content = request.ToHttpStringContent();
+			using HttpResponseMessage response = await client.HttpClient.SendAsync(HttpMethod.Post, $"/api/v{WasabiClient.ApiVersion}/btc/chaumiancoinjoin/inputs/", content).ConfigureAwait(false);
+
+			if (response.StatusCode != HttpStatusCode.OK)
 			{
-				client?.Dispose();
-				throw;
+				await response.ThrowRequestExceptionFromContentAsync().ConfigureAwait(false);
 			}
+
+			var inputsResponse = await response.Content.ReadAsJsonAsync<InputsResponse>().ConfigureAwait(false);
+
+			if (inputsResponse.RoundId != roundId) // This should never happen. If it does, that's a bug in the coordinator.
+			{
+				throw new NotSupportedException($"Coordinator assigned us to the wrong round: {inputsResponse.RoundId}. Requested round: {roundId}.");
+			}
+
+			client.UniqueId = inputsResponse.UniqueId;
+			Logger.LogInfo($"Round ({client.RoundId}), Alice ({client.UniqueId}): Registered {request.Inputs.Count()} inputs.");
+
+			return client;
 		}
 
 		public async Task<(RoundPhase currentPhase, IEnumerable<ActiveOutput> activeOutputs)> PostConfirmationAsync()
 		{
-			using HttpResponseMessage response = await TorClient.SendAsync(HttpMethod.Post, $"/api/v{WasabiClient.ApiVersion}/btc/chaumiancoinjoin/confirmation?uniqueId={UniqueId}&roundId={RoundId}").ConfigureAwait(false);
+			using HttpResponseMessage response = await HttpClient.SendAsync(HttpMethod.Post, $"/api/v{WasabiClient.ApiVersion}/btc/chaumiancoinjoin/confirmation?uniqueId={UniqueId}&roundId={RoundId}").ConfigureAwait(false);
 			if (response.StatusCode != HttpStatusCode.OK)
 			{
 				await response.ThrowRequestExceptionFromContentAsync().ConfigureAwait(false);
@@ -127,7 +123,7 @@ namespace WalletWasabi.CoinJoin.Client.Clients
 
 					var address = RegisteredAddresses[i];
 
-					uint256 outputScriptHash = new uint256(NBitcoin.Crypto.Hashes.SHA256(address.ScriptPubKey.ToBytes()));
+					uint256 outputScriptHash = new(NBitcoin.Crypto.Hashes.SHA256(address.ScriptPubKey.ToBytes()));
 					PubKey signerPubKey = GetSignerPubKey(i);
 					if (!VerifySignature(outputScriptHash, unblindedSignature, signerPubKey))
 					{
@@ -159,21 +155,17 @@ namespace WalletWasabi.CoinJoin.Client.Clients
 			{
 				try
 				{
-					using HttpResponseMessage response = await TorClient.SendAsync(HttpMethod.Post, $"/api/v{WasabiClient.ApiVersion}/btc/chaumiancoinjoin/unconfirmation?uniqueId={UniqueId}&roundId={RoundId}", cancel: cts.Token).ConfigureAwait(false);
-					if (response.StatusCode == HttpStatusCode.BadRequest || response.StatusCode == HttpStatusCode.Gone) // Otherwise maybe some internet connection issue there's. Let's consider that as timed out.
+					using HttpResponseMessage response = await HttpClient.SendAsync(HttpMethod.Post, $"/api/v{WasabiClient.ApiVersion}/btc/chaumiancoinjoin/unconfirmation?uniqueId={UniqueId}&roundId={RoundId}", cancel: cts.Token).ConfigureAwait(false);
+					if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Gone) // Otherwise maybe some internet connection issue there's. Let's consider that as timed out.
 					{
 						await response.ThrowRequestExceptionFromContentAsync().ConfigureAwait(false);
 					}
 				}
-				catch (Exception ex) when (ex is OperationCanceledException || ex is TaskCanceledException || ex is TimeoutException) // If could not do it within 3 seconds then it'll likely time out and take it as unconfirmed.
+				catch (Exception ex) when (ex is OperationCanceledException or TimeoutException) // If could not do it within 3 seconds then it'll likely time out and take it as unconfirmed.
 				{
 					return;
 				}
-				catch (ConnectionException) // If some internet connection issue then it'll likely time out and take it as unconfirmed.
-				{
-					return;
-				}
-				catch (TorSocks5FailureResponseException) // If some Tor connection issue then it'll likely time out and take it as unconfirmed.
+				catch (HttpRequestException ex) when (ex.InnerException is TorException) // If some Tor connection issue then it'll likely time out and take it as unconfirmed.
 				{
 					return;
 				}
@@ -183,7 +175,7 @@ namespace WalletWasabi.CoinJoin.Client.Clients
 
 		public async Task<Transaction> GetUnsignedCoinJoinAsync()
 		{
-			using HttpResponseMessage response = await TorClient.SendAsync(HttpMethod.Get, $"/api/v{WasabiClient.ApiVersion}/btc/chaumiancoinjoin/coinjoin?uniqueId={UniqueId}&roundId={RoundId}").ConfigureAwait(false);
+			using HttpResponseMessage response = await HttpClient.SendAsync(HttpMethod.Get, $"/api/v{WasabiClient.ApiVersion}/btc/chaumiancoinjoin/coinjoin?uniqueId={UniqueId}&roundId={RoundId}").ConfigureAwait(false);
 			if (response.StatusCode != HttpStatusCode.OK)
 			{
 				await response.ThrowRequestExceptionFromContentAsync().ConfigureAwait(false);
@@ -201,9 +193,9 @@ namespace WalletWasabi.CoinJoin.Client.Clients
 			var myDic = signatures.ToDictionary(signature => signature.Key, signature => signature.Value.ToString());
 
 			var jsonSignatures = JsonConvert.SerializeObject(myDic, Formatting.None);
-			var signatureRequestContent = new StringContent(jsonSignatures, Encoding.UTF8, "application/json");
+			using StringContent signatureRequestContent = new(jsonSignatures, Encoding.UTF8, "application/json");
 
-			using HttpResponseMessage response = await TorClient.SendAsync(HttpMethod.Post, $"/api/v{WasabiClient.ApiVersion}/btc/chaumiancoinjoin/signatures?uniqueId={UniqueId}&roundId={RoundId}", signatureRequestContent).ConfigureAwait(false);
+			using HttpResponseMessage response = await HttpClient.SendAsync(HttpMethod.Post, $"/api/v{WasabiClient.ApiVersion}/btc/chaumiancoinjoin/signatures?uniqueId={UniqueId}&roundId={RoundId}", signatureRequestContent).ConfigureAwait(false);
 			if (response.StatusCode != HttpStatusCode.NoContent)
 			{
 				await response.ThrowRequestExceptionFromContentAsync().ConfigureAwait(false);

@@ -3,6 +3,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text;
 using WalletWasabi.Helpers;
@@ -13,10 +14,10 @@ namespace WalletWasabi.Hwi.Parsers
 {
 	public static class HwiParser
 	{
-		public static bool TryParseErrors(string text, IEnumerable<HwiOption> options, out HwiException error)
+		public static bool TryParseErrors(string text, IEnumerable<HwiOption> options, [NotNullWhen(true)] out HwiException? error)
 		{
 			error = null;
-			if (JsonHelpers.TryParseJToken(text, out JToken token) && TryParseError(token, out HwiException e))
+			if (JsonHelpers.TryParseJToken(text, out JToken? token) && TryParseError(token, out HwiException? e))
 			{
 				error = e;
 			}
@@ -26,7 +27,7 @@ namespace WalletWasabi.Hwi.Parsers
 				if (text.Contains(subString, StringComparison.OrdinalIgnoreCase))
 				{
 					int startIndex = text.IndexOf(subString, StringComparison.OrdinalIgnoreCase) + subString.Length;
-					var err = text.Substring(startIndex);
+					var err = text[startIndex..];
 					error = new HwiException(HwiErrorCode.UnknownError, err);
 				}
 			}
@@ -41,10 +42,10 @@ namespace WalletWasabi.Hwi.Parsers
 				error = null;
 			}
 
-			return error is { };
+			return error is not null;
 		}
 
-		public static bool TryParseError(JToken token, out HwiException error)
+		public static bool TryParseError(JToken token, [NotNullWhen(true)] out HwiException? error)
 		{
 			error = null;
 			if (token is JArray)
@@ -87,7 +88,7 @@ namespace WalletWasabi.Hwi.Parsers
 				error = new HwiException(HwiErrorCode.UnknownError, "");
 			}
 
-			return error is { };
+			return error is not null;
 		}
 
 		public static bool TryParseErrorCode(JToken codeToken, out HwiErrorCode code)
@@ -158,7 +159,7 @@ namespace WalletWasabi.Hwi.Parsers
 
 		public static ExtPubKey ParseExtPubKey(string json)
 		{
-			if (JsonHelpers.TryParseJToken(json, out JToken token))
+			if (JsonHelpers.TryParseJToken(json, out JToken? token))
 			{
 				var extPubKeyString = token["xpub"]?.ToString().Trim();
 				var extPubKey = string.IsNullOrEmpty(extPubKeyString) ? null : NBitcoinHelpers.BetterParseExtPubKey(extPubKeyString);
@@ -178,7 +179,7 @@ namespace WalletWasabi.Hwi.Parsers
 				network = Network.TestNet;
 			}
 
-			if (JsonHelpers.TryParseJToken(json, out JToken token))
+			if (JsonHelpers.TryParseJToken(json, out JToken? token))
 			{
 				var addressString = token["address"]?.ToString()?.Trim() ?? null;
 				try
@@ -206,7 +207,7 @@ namespace WalletWasabi.Hwi.Parsers
 				network = Network.TestNet;
 			}
 
-			if (JsonHelpers.TryParseJToken(json, out JToken token))
+			if (JsonHelpers.TryParseJToken(json, out JToken? token))
 			{
 				var psbtString = token["psbt"]?.ToString()?.Trim() ?? null;
 				var psbt = PSBT.Parse(psbtString, network);
@@ -253,8 +254,8 @@ namespace WalletWasabi.Hwi.Parsers
 			}
 
 			HwiErrorCode? code = null;
-			string errorString = null;
-			if (TryParseError(json, out HwiException err))
+			string? errorString = null;
+			if (TryParseError(json, out HwiException? err))
 			{
 				code = err.ErrorCode;
 				errorString = err.Message;
@@ -286,7 +287,7 @@ namespace WalletWasabi.Hwi.Parsers
 			return rawPath.Replace(@"\\", @"\");
 		}
 
-		public static bool TryParseVersion(string hwiResponse, out Version version)
+		public static bool TryParseVersion(string hwiResponse, [NotNullWhen(true)] out Version? version)
 		{
 			version = null;
 			try
@@ -306,7 +307,7 @@ namespace WalletWasabi.Hwi.Parsers
 			const string Prefix = "hwi";
 
 			// Order matters! https://github.com/zkSNACKs/WalletWasabi/pull/1905/commits/cecefcc50af140cc06cb93961cda86f9b21db11b
-			string prefixToTrim = hwiResponse.StartsWith(WinPrefix)
+			var prefixToTrim = hwiResponse.StartsWith(WinPrefix)
 				? WinPrefix
 				: hwiResponse.StartsWith(Prefix)
 					? Prefix
@@ -329,7 +330,7 @@ namespace WalletWasabi.Hwi.Parsers
 			return Version.Parse(onlyVersion);
 		}
 
-		public static string ToArgumentString(Network network, IEnumerable<HwiOption> options, HwiCommands? command, string commandArguments)
+		public static string ToArgumentString(Network network, IEnumerable<HwiOption> options, HwiCommands? command, string? commandArguments)
 		{
 			options ??= Enumerable.Empty<HwiOption>();
 			var fullOptions = new List<HwiOption>(options);
@@ -341,19 +342,14 @@ namespace WalletWasabi.Hwi.Parsers
 
 			var optionsString = string.Join(" --", fullOptions.Select(x =>
 			{
-				string optionString;
-				if (x.Type == HwiOptions.DeviceType)
+				string optionString = x.Type switch
 				{
-					optionString = "device-type";
-				}
-				else if (x.Type == HwiOptions.DevicePath)
-				{
-					optionString = "device-path";
-				}
-				else
-				{
-					optionString = x.Type.ToString().ToLowerInvariant();
-				}
+					HwiOptions.DeviceType => "device-type",
+					HwiOptions.DevicePath => "device-path",
+					HwiOptions.TestNet => "chain test",
+					_ => x.Type.ToString().ToLowerInvariant(),
+				};
+
 				if (string.IsNullOrWhiteSpace(x.Arguments))
 				{
 					return optionString;

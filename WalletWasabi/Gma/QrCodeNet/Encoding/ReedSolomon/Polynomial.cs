@@ -54,12 +54,12 @@ namespace Gma.QrCodeNet.Encoding.ReedSolomon
 		internal bool IsMonomialZero => Coefficients[0] == 0;
 
 		/// <returns>
-		/// coefficient position. where (coefficient)x^degree
+		/// Coefficient position. where (coefficient)x^degree
 		/// </returns>
 		internal int GetCoefficient(int degree)
 		{
-			//eg: x^2 + x + 1. degree 1, reverse position = degree + 1 = 2.
-			//Pos = 3 - 2 = 1
+			// Eg: x^2 + x + 1. degree 1, reverse position = degree + 1 = 2.
+			// Pos = 3 - 2 = 1
 			return Coefficients[^(degree + 1)];
 		}
 
@@ -179,7 +179,7 @@ namespace Gma.QrCodeNet.Encoding.ReedSolomon
 		}
 
 		/// <summary>
-		/// divide current polynomial by "other"
+		/// Divide current polynomial by "other"
 		/// </summary>
 		/// <returns>Result polynomial after divide</returns>
 		internal PolyDivideStruct Divide(Polynomial other)
@@ -193,9 +193,11 @@ namespace Gma.QrCodeNet.Encoding.ReedSolomon
 			{
 				throw new ArgumentException($"Cannot divide by {nameof(Polynomial)} Zero.");
 			}
-			//this divide by other = a divide by b
+
+			// This divide by other = a divide by b
 			int aLength = Coefficients.Length;
-			//We will make change to aCoefficient. It will return as remainder
+
+			// We will make change to aCoefficient. It will return as remainder
 			int[] aCoefficients = new int[aLength];
 			Array.Copy(Coefficients, 0, aCoefficients, 0, aLength);
 
@@ -207,11 +209,11 @@ namespace Gma.QrCodeNet.Encoding.ReedSolomon
 			}
 			else
 			{
-				//quotient coefficients
-				//qLastIndex = alength - blength  qlength = qLastIndex + 1
+				// Quotient coefficients
+				// qLastIndex = alength - blength  qlength = qLastIndex + 1
 				int[] qCoefficients = new int[(aLength - bLength) + 1];
 
-				//Denominator
+				// Denominator
 				int otherLeadingTerm = other.GetCoefficient(other.Degree);
 				int inverseOtherLeadingTerm = GField.Inverse(otherLeadingTerm);
 

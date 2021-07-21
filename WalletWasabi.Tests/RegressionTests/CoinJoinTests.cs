@@ -12,9 +12,13 @@ using System.Security;
 using System.Threading;
 using System.Threading.Tasks;
 using WalletWasabi.BitcoinCore.Rpc;
+using WalletWasabi.Blockchain.Analysis.Clustering;
+using WalletWasabi.Blockchain.Analysis.FeesEstimation;
+using WalletWasabi.Blockchain.BlockFilters;
 using WalletWasabi.Blockchain.Blocks;
 using WalletWasabi.Blockchain.Keys;
 using WalletWasabi.Blockchain.TransactionOutputs;
+using WalletWasabi.Blockchain.Transactions;
 using WalletWasabi.CoinJoin.Client.Clients;
 using WalletWasabi.CoinJoin.Client.Clients.Queuing;
 using WalletWasabi.CoinJoin.Client.Rounds;
@@ -26,6 +30,7 @@ using WalletWasabi.Logging;
 using WalletWasabi.Models;
 using WalletWasabi.Services;
 using WalletWasabi.Stores;
+using WalletWasabi.Tests.Helpers;
 using WalletWasabi.Tests.XunitConfiguration;
 using WalletWasabi.Tor.Http;
 using WalletWasabi.Tor.Http.Extensions;
@@ -43,10 +48,12 @@ namespace WalletWasabi.Tests.RegressionTests
 		{
 			RegTestFixture = regTestFixture;
 			BaseUri = new Uri(RegTestFixture.BackendEndPoint);
+			BackendClearnetHttpClient = RegTestFixture.BackendHttpClient;
 		}
 
 		private RegTestFixture RegTestFixture { get; }
 		public Uri BaseUri { get; }
+		public ClearnetHttpClient BackendClearnetHttpClient { get; }
 
 		[Fact]
 		public async Task CoordinatorCtorTestsAsync()
@@ -59,15 +66,16 @@ namespace WalletWasabi.Tests.RegressionTests
 			var bestBlock = await rpc.GetBlockAsync(bestBlockHash);
 			var coinbaseTxId = bestBlock.Transactions[0].GetHash();
 			var offchainTxId = network.Consensus.ConsensusFactory.CreateTransaction().GetHash();
-			var mempoolTxId = await rpc.SendToAddressAsync(new Key().PubKey.GetSegwitAddress(network), Money.Coins(1));
+			using var key = new Key();
+			var mempoolTxId = await rpc.SendToAddressAsync(key.PubKey.GetSegwitAddress(network), Money.Coins(1));
 
-			var folder = Tests.Common.GetWorkDir();
+			var folder = Helpers.Common.GetWorkDir();
 			await IoHelpers.TryDeleteDirectoryAsync(folder);
 			Directory.CreateDirectory(folder);
 			var cjfile = Path.Combine(folder, $"CoinJoins{network}.txt");
 			File.WriteAllLines(cjfile, new[] { coinbaseTxId.ToString(), offchainTxId.ToString(), mempoolTxId.ToString() });
 
-			using (var coordinatorToTest = new Coordinator(network, global.HostedServices.FirstOrDefault<BlockNotifier>(), folder, rpc, coordinator.RoundConfig))
+			using (var coordinatorToTest = new Coordinator(network, global.HostedServices.Get<BlockNotifier>(), folder, rpc, coordinator.RoundConfig))
 			{
 				var txIds = await File.ReadAllLinesAsync(cjfile);
 
@@ -79,7 +87,7 @@ namespace WalletWasabi.Tests.RegressionTests
 				Directory.CreateDirectory(folder);
 				File.WriteAllLines(cjfile, new[] { coinbaseTxId.ToString(), "This line is invalid (the file is corrupted)", offchainTxId.ToString() });
 
-				var coordinatorToTest2 = new Coordinator(network, global.HostedServices.FirstOrDefault<BlockNotifier>(), folder, rpc, coordinatorToTest.RoundConfig);
+				Coordinator coordinatorToTest2 = new(network, global.HostedServices.Get<BlockNotifier>(), folder, rpc, coordinatorToTest.RoundConfig);
 				coordinatorToTest2?.Dispose();
 				txIds = await File.ReadAllLinesAsync(cjfile);
 				Assert.Single(txIds);
@@ -104,8 +112,8 @@ namespace WalletWasabi.Tests.RegressionTests
 			coordinator.RoundConfig.UpdateOrDefault(roundConfig, toFile: true);
 			coordinator.AbortAllRoundsInInputRegistration("");
 
-			using var torClient = new TorHttpClient(BaseUri, Tests.Common.TorSocks5Endpoint);
-			using var satoshiClient = new SatoshiClient(BaseUri, null);
+			IHttpClient httpClient = RegTestFixture.BackendHttpClient;
+			var satoshiClient = new SatoshiClient(BackendClearnetHttpClient);
 
 			#region PostInputsGetStates
 
@@ -114,7 +122,7 @@ namespace WalletWasabi.Tests.RegressionTests
 			// <-------------------------->
 
 			var states = await satoshiClient.GetAllRoundStatesAsync();
-			Assert.Equal(2, states.Count());
+			Assert.Single(states);
 			foreach (var rs in states)
 			{
 				// Never changes.
@@ -152,7 +160,7 @@ namespace WalletWasabi.Tests.RegressionTests
 
 			byte[] dummySignature = new byte[65];
 
-			var nullBlindedScript = new BlindedOutputWithNonceIndex(0, uint256.One);
+			BlindedOutputWithNonceIndex nullBlindedScript = new(0, uint256.One);
 			inputsRequest.BlindedOutputScripts = Enumerable.Range(0, round.MixingLevels.Count() + 1).Select(x => nullBlindedScript);
 			inputsRequest.ChangeOutputAddress = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, network);
 			inputsRequest.Inputs = new List<InputProofModel> { new InputProofModel { Input = new OutPoint(uint256.One, 0), Proof = dummySignature } };
@@ -178,7 +186,7 @@ namespace WalletWasabi.Tests.RegressionTests
 
 			inputsRequest.Inputs = new List<InputProofModel> { new InputProofModel { Input = coin.Outpoint, Proof = dummySignature } };
 			httpRequestException = await Assert.ThrowsAsync<HttpRequestException>(async () => await CreateNewAliceClientAsync(roundId, registeredAddresses, signerPubKeys, requesters, inputsRequest));
-			Assert.Equal($"{HttpStatusCode.BadRequest.ToReasonString()}\nProvided input is neither confirmed, nor is from an unconfirmed coinjoin.", httpRequestException.Message);
+			Assert.Equal($"{HttpStatusCode.BadRequest.ToReasonString()}\nProvided input is unconfirmed.", httpRequestException.Message);
 
 			var blocks = await rpc.GenerateAsync(1);
 			httpRequestException = await Assert.ThrowsAsync<HttpRequestException>(async () => await CreateNewAliceClientAsync(roundId, registeredAddresses, signerPubKeys, requesters, inputsRequest));
@@ -208,11 +216,11 @@ namespace WalletWasabi.Tests.RegressionTests
 
 			round = coordinator.GetCurrentInputRegisterableRoundOrDefault();
 			var requester = new Requester();
-			uint256 msg = new uint256(NBitcoin.Crypto.Hashes.SHA256(network.Consensus.ConsensusFactory.CreateTransaction().ToBytes()));
+			uint256 msg = new(NBitcoin.Crypto.Hashes.SHA256(network.Consensus.ConsensusFactory.CreateTransaction().ToBytes()));
 			var nonce = round.NonceProvider.GetNextNonce();
-			var blindedData = new BlindedOutputWithNonceIndex(nonce.N, requester.BlindMessage(msg, nonce.R, round.MixingLevels.GetBaseLevel().SignerKey.PubKey));
+			BlindedOutputWithNonceIndex blindedData = new(nonce.N, requester.BlindMessage(msg, nonce.R, round.MixingLevels.GetBaseLevel().SignerKey.PubKey));
 			inputsRequest.BlindedOutputScripts = new[] { blindedData };
-			uint256 blindedOutputScriptsHash = new uint256(NBitcoin.Crypto.Hashes.SHA256(blindedData.BlindedOutput.ToBytes()));
+			uint256 blindedOutputScriptsHash = new(NBitcoin.Crypto.Hashes.SHA256(blindedData.BlindedOutput.ToBytes()));
 
 			proof = key.SignCompact(blindedOutputScriptsHash);
 			inputsRequest.Inputs.First().Proof = proof;
@@ -256,12 +264,13 @@ namespace WalletWasabi.Tests.RegressionTests
 			blindedOutputScriptsHash = new uint256(NBitcoin.Crypto.Hashes.SHA256(blindedData.BlindedOutput.ToBytes()));
 			proof = key.SignCompact(blindedOutputScriptsHash);
 			inputsRequest.Inputs.First().Proof = proof;
-			using (var aliceClient = await CreateNewAliceClientAsync(roundId, registeredAddresses, signerPubKeys, requesters, inputsRequest))
+			var aliceClient = await CreateNewAliceClientAsync(roundId, registeredAddresses, signerPubKeys, requesters, inputsRequest);
 			{
 				// Test DelayedClientRoundRegistration logic.
-				ClientRoundRegistration first = null;
+				ClientRoundRegistration first;
+				var randomKey = KeyManager.CreateNew(out _, "").GenerateNewKey(SmartLabel.Empty, KeyState.Clean, false);
 				var second = new ClientRoundRegistration(aliceClient,
-					new[] { new SmartCoin(uint256.One, 1, Script.Empty, Money.Zero, new[] { new OutPoint(uint256.One, 1) }, Height.Unknown, true, 2) },
+					new[] { BitcoinFactory.CreateSmartCoin(randomKey, 0m, anonymitySet: 2) },
 					BitcoinAddress.Create("12Rty3c8j3QiZSwLVaBtch6XUMZaja3RC7", Network.Main));
 				first = second;
 				second = null;
@@ -303,7 +312,7 @@ namespace WalletWasabi.Tests.RegressionTests
 			Assert.Equal(2, currentRound.AnonymitySet);
 			Assert.Equal(0, currentRound.CountAlices());
 
-			using (var aliceClient = await CreateNewAliceClientAsync(roundId, registeredAddresses, signerPubKeys, requesters, inputsRequest))
+			aliceClient = await CreateNewAliceClientAsync(roundId, registeredAddresses, signerPubKeys, requesters, inputsRequest);
 			{
 				Assert.NotEqual(Guid.Empty, aliceClient.UniqueId);
 				Assert.True(aliceClient.RoundId > 0);
@@ -369,7 +378,7 @@ namespace WalletWasabi.Tests.RegressionTests
 				h => currentRound.PhaseChanged += h,
 				h => currentRound.PhaseChanged -= h);
 
-			using (var aliceClient = await CreateNewAliceClientAsync(roundId, registeredAddresses, signerPubKeys, requesters, inputsRequest))
+			aliceClient = await CreateNewAliceClientAsync(roundId, registeredAddresses, signerPubKeys, requesters, inputsRequest);
 			{
 				Assert.Equal(2, currentRound.AnonymitySet);
 				Assert.Equal(2, currentRound.CountAlices());
@@ -455,30 +464,30 @@ namespace WalletWasabi.Tests.RegressionTests
 					new InputProofModel { Input = coin.Outpoint, Proof = key.SignCompact(blindedOutputScriptsHash) }
 				}
 			};
-			using (var aliceClient = await CreateNewAliceClientAsync(roundId, registeredAddresses, signerPubKeys, requesters, inputRequest))
+			aliceClient = await CreateNewAliceClientAsync(roundId, registeredAddresses, signerPubKeys, requesters, inputRequest);
 			{
 				Assert.NotEqual(Guid.Empty, aliceClient.UniqueId);
 				Assert.True(aliceClient.RoundId > 0);
 				// Double the request.
 				// badrequests
-				using (var response = await torClient.SendAsync(HttpMethod.Post, $"/api/v{WalletWasabi.Helpers.Constants.BackendMajorVersion}/btc/chaumiancoinjoin/confirmation"))
+				using (var response = await httpClient.SendAsync(HttpMethod.Post, $"/api/v{WalletWasabi.Helpers.Constants.BackendMajorVersion}/btc/chaumiancoinjoin/confirmation"))
 				{
 					Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 				}
-				using (var response = await torClient.SendAsync(HttpMethod.Post, $"/api/v{WalletWasabi.Helpers.Constants.BackendMajorVersion}/btc/chaumiancoinjoin/confirmation?uniqueId={aliceClient.UniqueId}"))
+				using (var response = await httpClient.SendAsync(HttpMethod.Post, $"/api/v{WalletWasabi.Helpers.Constants.BackendMajorVersion}/btc/chaumiancoinjoin/confirmation?uniqueId={aliceClient.UniqueId}"))
 				{
 					Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 				}
-				using (var response = await torClient.SendAsync(HttpMethod.Post, $"/api/v{WalletWasabi.Helpers.Constants.BackendMajorVersion}/btc/chaumiancoinjoin/confirmation?roundId={aliceClient.RoundId}"))
+				using (var response = await httpClient.SendAsync(HttpMethod.Post, $"/api/v{WalletWasabi.Helpers.Constants.BackendMajorVersion}/btc/chaumiancoinjoin/confirmation?roundId={aliceClient.RoundId}"))
 				{
 					Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 				}
-				using (var response = await torClient.SendAsync(HttpMethod.Post, $"/api/v{WalletWasabi.Helpers.Constants.BackendMajorVersion}/btc/chaumiancoinjoin/confirmation?uniqueId=foo&roundId={aliceClient.RoundId}"))
+				using (var response = await httpClient.SendAsync(HttpMethod.Post, $"/api/v{WalletWasabi.Helpers.Constants.BackendMajorVersion}/btc/chaumiancoinjoin/confirmation?uniqueId=foo&roundId={aliceClient.RoundId}"))
 				{
 					Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 					Assert.Equal("Invalid uniqueId provided.", await response.Content.ReadAsJsonAsync<string>());
 				}
-				using (var response = await torClient.SendAsync(HttpMethod.Post, $"/api/v{WalletWasabi.Helpers.Constants.BackendMajorVersion}/btc/chaumiancoinjoin/confirmation?uniqueId={aliceClient.UniqueId}&roundId=bar"))
+				using (var response = await httpClient.SendAsync(HttpMethod.Post, $"/api/v{WalletWasabi.Helpers.Constants.BackendMajorVersion}/btc/chaumiancoinjoin/confirmation?uniqueId={aliceClient.UniqueId}&roundId=bar"))
 				{
 					Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 					Assert.Contains("\"roundId\":[\"The value 'bar' is not valid.\"", await response.Content.ReadAsStringAsync());
@@ -504,12 +513,13 @@ namespace WalletWasabi.Tests.RegressionTests
 					new InputProofModel { Input = coin.Outpoint, Proof = key.SignCompact(blindedOutputScriptsHash) }
 				}
 			};
-			using (var aliceClient = await CreateNewAliceClientAsync(roundId, registeredAddresses, signerPubKeys, requesters, inputRequest))
+
+			aliceClient = await CreateNewAliceClientAsync(roundId, registeredAddresses, signerPubKeys, requesters, inputRequest);
 			{
 				Assert.NotEqual(Guid.Empty, aliceClient.UniqueId);
 				Assert.True(aliceClient.RoundId > 0);
 				await aliceClient.PostUnConfirmationAsync();
-				using HttpResponseMessage response = await torClient.SendAsync(HttpMethod.Post, $"/api/v{WalletWasabi.Helpers.Constants.BackendMajorVersion}/btc/chaumiancoinjoin/unconfirmation?uniqueId={aliceClient.UniqueId}&roundId={aliceClient.RoundId}");
+				using HttpResponseMessage response = await httpClient.SendAsync(HttpMethod.Post, $"/api/v{WalletWasabi.Helpers.Constants.BackendMajorVersion}/btc/chaumiancoinjoin/unconfirmation?uniqueId={aliceClient.UniqueId}&roundId={aliceClient.RoundId}");
 				Assert.True(response.IsSuccessStatusCode);
 				Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 				Assert.Equal("Alice not found.", await response.Content.ReadAsJsonAsync<string>());
@@ -558,14 +568,14 @@ namespace WalletWasabi.Tests.RegressionTests
 			var requester1 = new Requester();
 			var requester2 = new Requester();
 			nonce = round.NonceProvider.GetNextNonce();
-			var blinded1 = new BlindedOutputWithNonceIndex(nonce.N, requester1.BlindScript(round.MixingLevels.GetBaseLevel().SignerKey.PubKey, nonce.R, outputAddress1.ScriptPubKey));
-			uint256 blindedOutputScriptsHash1 = new uint256(NBitcoin.Crypto.Hashes.SHA256(blinded1.BlindedOutput.ToBytes()));
+			BlindedOutputWithNonceIndex blinded1 = new(nonce.N, requester1.BlindScript(round.MixingLevels.GetBaseLevel().SignerKey.PubKey, nonce.R, outputAddress1.ScriptPubKey));
+			uint256 blindedOutputScriptsHash1 = new(NBitcoin.Crypto.Hashes.SHA256(blinded1.BlindedOutput.ToBytes()));
 			nonce = round.NonceProvider.GetNextNonce();
-			var blinded2 = new BlindedOutputWithNonceIndex(nonce.N, requester2.BlindScript(round.MixingLevels.GetBaseLevel().Signer.Key.PubKey, nonce.R, outputAddress2.ScriptPubKey));
-			uint256 blindedOutputScriptsHash2 = new uint256(NBitcoin.Crypto.Hashes.SHA256(blinded2.BlindedOutput.ToBytes()));
+			BlindedOutputWithNonceIndex blinded2 = new(nonce.N, requester2.BlindScript(round.MixingLevels.GetBaseLevel().Signer.Key.PubKey, nonce.R, outputAddress2.ScriptPubKey));
+			uint256 blindedOutputScriptsHash2 = new(NBitcoin.Crypto.Hashes.SHA256(blinded2.BlindedOutput.ToBytes()));
 
-			var input1 = new OutPoint(hash1, index1);
-			var input2 = new OutPoint(hash2, index2);
+			OutPoint input1 = new(hash1, index1);
+			OutPoint input2 = new(hash2, index2);
 
 			var inputRequest1 = new InputsRequest4
 			{
@@ -585,8 +595,9 @@ namespace WalletWasabi.Tests.RegressionTests
 					new InputProofModel { Input = input2, Proof = key2.SignCompact(blindedOutputScriptsHash2) }
 				}
 			};
-			using (var aliceClient1 = await CreateNewAliceClientAsync(roundId, new[] { outputAddress1 }, signerPubKeys, new[] { requester1 }, inputRequest1))
-			using (var aliceClient2 = await CreateNewAliceClientAsync(roundId, new[] { outputAddress2 }, signerPubKeys, new[] { requester2 }, inputRequest2))
+
+			var aliceClient1 = await CreateNewAliceClientAsync(roundId, new[] { outputAddress1 }, signerPubKeys, new[] { requester1 }, inputRequest1);
+			var aliceClient2 = await CreateNewAliceClientAsync(roundId, new[] { outputAddress2 }, signerPubKeys, new[] { requester2 }, inputRequest2);
 			{
 				Assert.Equal(aliceClient2.RoundId, aliceClient1.RoundId);
 				Assert.NotEqual(aliceClient2.UniqueId, aliceClient1.UniqueId);
@@ -607,9 +618,9 @@ namespace WalletWasabi.Tests.RegressionTests
 					throw new NotSupportedException("Coordinator did not sign the blinded output properly.");
 				}
 
-				using (var bobClient1 = new BobClient(BaseUri, null))
-				using (var bobClient2 = new BobClient(BaseUri, null))
 				{
+					var bobClient1 = new BobClient(BackendClearnetHttpClient);
+					var bobClient2 = new BobClient(BackendClearnetHttpClient);
 					await bobClient1.PostOutputAsync(aliceClient1.RoundId, new ActiveOutput(outputAddress1, connConfResp.activeOutputs.First().Signature, 0));
 					await bobClient2.PostOutputAsync(aliceClient2.RoundId, new ActiveOutput(outputAddress2, connConfResp2.activeOutputs.First().Signature, 0));
 				}
@@ -680,7 +691,7 @@ namespace WalletWasabi.Tests.RegressionTests
 				uint256[] mempooltxs = await rpc.GetRawMempoolAsync();
 				Assert.Contains(unsignedCoinJoin.GetHash(), mempooltxs);
 
-				var wasabiClient = new WasabiClient(BaseUri, null);
+				var wasabiClient = new WasabiClient(BackendClearnetHttpClient);
 				var syncInfo = await wasabiClient.GetSynchronizeAsync(blockHashed[0], 1);
 				Assert.Contains(unsignedCoinJoin.GetHash(), syncInfo.UnconfirmedCoinJoins);
 				var txs = await wasabiClient.GetTransactionsAsync(network, new[] { unsignedCoinJoin.GetHash() }, CancellationToken.None);
@@ -703,9 +714,7 @@ namespace WalletWasabi.Tests.RegressionTests
 			coordinator.RoundConfig.UpdateOrDefault(roundConfig, toFile: true);
 			coordinator.AbortAllRoundsInInputRegistration("");
 
-			Uri baseUri = new Uri(RegTestFixture.BackendEndPoint);
-			using var torClient = new TorHttpClient(baseUri, Tests.Common.TorSocks5Endpoint);
-			using var satoshiClient = new SatoshiClient(baseUri, null);
+			var satoshiClient = new SatoshiClient(BackendClearnetHttpClient);
 			var round = coordinator.GetCurrentInputRegisterableRoundOrDefault();
 			var roundId = round.RoundId;
 
@@ -727,7 +736,7 @@ namespace WalletWasabi.Tests.RegressionTests
 					var scriptPubKey = outputsAddress.ScriptPubKey;
 					// We blind the scriptPubKey with a new requester by mixin level
 					var nonce = round.NonceProvider.GetNextNonce();
-					var blindedScript = new BlindedOutputWithNonceIndex(nonce.N, requester.BlindScript(level.SignerKey.PubKey, nonce.R, scriptPubKey));
+					BlindedOutputWithNonceIndex blindedScript = new(nonce.N, requester.BlindScript(level.SignerKey.PubKey, nonce.R, scriptPubKey));
 					outputs.Add((requester, outputsAddress, blindedScript));
 				}
 
@@ -746,7 +755,7 @@ namespace WalletWasabi.Tests.RegressionTests
 					await rpc.GenerateAsync(1);
 					var tx = await rpc.GetRawTransactionAsync(hash);
 					var index = tx.Outputs.FindIndex(x => x.ScriptPubKey == outputAddress.ScriptPubKey);
-					var input = new OutPoint(hash, index);
+					OutPoint input = new(hash, index);
 
 					inputs.Add((
 						input,
@@ -789,16 +798,15 @@ namespace WalletWasabi.Tests.RegressionTests
 			Assert.Equal(RoundPhase.OutputRegistration, roundState.Phase);
 
 			var l = 0;
+			var bobClient = new BobClient(BackendClearnetHttpClient);
+
 			foreach (var (aliceClient, outputs, _) in participants)
 			{
-				using (var bobClient = new BobClient(baseUri, null))
+				var i = 0;
+				foreach (var output in outputs.Take(activeOutputs[l].Count()))
 				{
-					var i = 0;
-					foreach (var output in outputs.Take(activeOutputs[l].Count()))
-					{
-						await bobClient.PostOutputAsync(aliceClient.RoundId, new ActiveOutput(output.outputAddress, activeOutputs[l].ElementAt(i).Signature, i));
-						i++;
-					}
+					await bobClient.PostOutputAsync(aliceClient.RoundId, new ActiveOutput(output.outputAddress, activeOutputs[l].ElementAt(i).Signature, i));
+					i++;
 				}
 				l++;
 			}
@@ -807,7 +815,7 @@ namespace WalletWasabi.Tests.RegressionTests
 			roundState = await satoshiClient.GetRoundStateAsync(roundId);
 			Assert.Equal(RoundPhase.Signing, roundState.Phase);
 
-			uint256 transactionId = null;
+			uint256? transactionId = null;
 			foreach (var (aliceClient, outputs, inputs) in participants)
 			{
 				var unsignedTransaction = await aliceClient.GetUnsignedCoinJoinAsync();
@@ -855,7 +863,7 @@ namespace WalletWasabi.Tests.RegressionTests
 			coordinator.AbortAllRoundsInInputRegistration("");
 			await rpc.GenerateAsync(100); // So to make sure we have enough money.
 
-			Uri baseUri = new Uri(RegTestFixture.BackendEndPoint);
+			Uri baseUri = new(RegTestFixture.BackendEndPoint);
 			var spentCoins = new List<Coin>();
 			var fundingTxCount = 0;
 			var inputRegistrationUsers = new List<(Requester requester, BlindedOutputWithNonceIndex blinded, BitcoinAddress activeOutputAddress, BitcoinAddress changeOutputAddress, IEnumerable<InputProofModel> inputProofModels, List<(Key key, BitcoinWitPubKeyAddress address, uint256 txHash, Transaction tx, OutPoint input)> userInputData)>();
@@ -867,16 +875,16 @@ namespace WalletWasabi.Tests.RegressionTests
 				CoordinatorRound round = coordinator.GetCurrentInputRegisterableRoundOrDefault();
 				var requester = new Requester();
 				var nonce = round.NonceProvider.GetNextNonce();
-				var blinded = new BlindedOutputWithNonceIndex(nonce.N, requester.BlindScript(round.MixingLevels.GetBaseLevel().SignerKey.PubKey, nonce.R, activeOutputAddress.ScriptPubKey));
-				uint256 blindedOutputScriptsHash = new uint256(NBitcoin.Crypto.Hashes.SHA256(blinded.BlindedOutput.ToBytes()));
+				BlindedOutputWithNonceIndex blinded = new(nonce.N, requester.BlindScript(round.MixingLevels.GetBaseLevel().SignerKey.PubKey, nonce.R, activeOutputAddress.ScriptPubKey));
+				uint256 blindedOutputScriptsHash = new(NBitcoin.Crypto.Hashes.SHA256(blinded.BlindedOutput.ToBytes()));
 
 				var inputProofModels = new List<InputProofModel>();
-				int numberOfInputs = new Random().Next(1, 7);
+				int numberOfInputs = CryptoHelpers.RandomInt(1, 6);
 				var receiveSatoshiSum = 0;
 				for (int j = 0; j < numberOfInputs; j++)
 				{
 					var key = new Key();
-					var receiveSatoshi = new Random().Next(1000, 100000000);
+					var receiveSatoshi = CryptoHelpers.RandomInt(1000, 100000000);
 					receiveSatoshiSum += receiveSatoshi;
 					if (j == numberOfInputs - 1)
 					{
@@ -983,17 +991,16 @@ namespace WalletWasabi.Tests.RegressionTests
 				users.Add((user.requester, user.blinded, user.activeOutputAddress, user.changeOutputAddress, user.inputProofModels, user.userInputData, user.aliceClient, resp.Item2.First().Signature));
 			}
 
-			var outputRequests = new List<(BobClient, Task)>();
+			var outputRequests = new List<Task>();
 			foreach (var user in users)
 			{
-				var bobClient = new BobClient(baseUri, null);
-				outputRequests.Add((bobClient, bobClient.PostOutputAsync(roundId, new ActiveOutput(user.activeOutputAddress, user.unblindedSignature, 0))));
+				var bobClient = new BobClient(BackendClearnetHttpClient);
+				outputRequests.Add(bobClient.PostOutputAsync(roundId, new ActiveOutput(user.activeOutputAddress, user.unblindedSignature, 0)));
 			}
 
-			foreach (var request in outputRequests)
+			foreach (Task task in outputRequests)
 			{
-				await request.Item2;
-				request.Item1?.Dispose();
+				await task;
 			}
 
 			var coinjoinRequests = new List<Task<Transaction>>();
@@ -1048,8 +1055,7 @@ namespace WalletWasabi.Tests.RegressionTests
 			}
 
 			FeeRate feeRateTx = finalCoinjoin.GetFeeRate(coins.ToArray());
-			var esr = await rpc.EstimateSmartFeeAsync(roundConfig.ConfirmationTarget, new FeeRate(2m), EstimateSmartFeeMode.Conservative, simulateIfRegTest: true);
-			FeeRate feeRateReal = esr.FeeRate;
+			FeeRate feeRateReal = (await rpc.EstimateSmartFeeAsync(roundConfig.ConfirmationTarget, EstimateSmartFeeMode.Conservative, simulateIfRegTest: true)).FeeRate;
 
 			Assert.True(feeRateReal.FeePerK - feeRateReal.FeePerK / 2 < feeRateTx.FeePerK); // Max 50% mistake.
 			Assert.True(2 * feeRateReal.FeePerK > feeRateTx.FeePerK); // Max 200% mistake.
@@ -1069,9 +1075,9 @@ namespace WalletWasabi.Tests.RegressionTests
 		{
 			(string password, IRPCClient rpc, Network network, Coordinator coordinator, _, BitcoinStore bitcoinStore, _) = await Common.InitializeTestEnvironmentAsync(RegTestFixture, 1);
 
-			var wasabiClientFactory = new WasabiClientFactory(torEndPoint: null, backendUriGetter: () => new Uri(RegTestFixture.BackendEndPoint));
-			var synchronizer = new WasabiSynchronizer(network, bitcoinStore, wasabiClientFactory);
-			synchronizer.Start(requestInterval: TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(5), 10000); // Start wasabi synchronizer service.
+			using HttpClientFactory httpClientFactory = new(torEndPoint: null, backendUriGetter: () => new Uri(RegTestFixture.BackendEndPoint));
+			WasabiSynchronizer synchronizer = new(bitcoinStore, httpClientFactory);
+			synchronizer.Start(requestInterval: TimeSpan.FromSeconds(3), 10000); // Start wasabi synchronizer service.
 
 			Money denomination = Money.Coins(0.9m);
 			decimal coordinatorFeePercent = 0.1m;
@@ -1107,11 +1113,13 @@ namespace WalletWasabi.Tests.RegressionTests
 				key.SetKeyState(KeyState.Used);
 				var tx = await rpc.GetRawTransactionAsync(txId);
 				var height = await rpc.GetBlockCountAsync();
+				SmartTransaction stx = new(tx, height + 1);
 				var bechCoin = tx.Outputs.GetCoins(bech.ScriptPubKey).Single();
 
-				var smartCoin = new SmartCoin(bechCoin, tx.Inputs.ToOutPoints().ToArray(), height + 1, replaceable: false, anonymitySet: tx.GetAnonymitySet(bechCoin.Outpoint.N));
+				SmartCoin smartCoin = new(stx, bechCoin.Outpoint.N, key);
+				key.SetAnonymitySet(tx.GetAnonymitySet(bechCoin.Outpoint.N), tx.GetHash());
 
-				var chaumianClient = new CoinJoinClient(synchronizer, rpc.Network, keyManager);
+				CoinJoinClient chaumianClient = new(synchronizer, rpc.Network, keyManager, new Kitchen());
 
 				participants.Add((smartCoin, chaumianClient));
 			}
@@ -1173,9 +1181,9 @@ namespace WalletWasabi.Tests.RegressionTests
 		{
 			(string password, IRPCClient rpc, Network network, Coordinator coordinator, _, BitcoinStore bitcoinStore, _) = await Common.InitializeTestEnvironmentAsync(RegTestFixture, 1);
 
-			var wasabiClientFactory = new WasabiClientFactory(torEndPoint: null, backendUriGetter: () => new Uri(RegTestFixture.BackendEndPoint));
-			var synchronizer = new WasabiSynchronizer(network, bitcoinStore, wasabiClientFactory);
-			synchronizer.Start(requestInterval: TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(5), 10000); // Start wasabi synchronizer service.
+			using HttpClientFactory httpClientFactory = new(torEndPoint: null, backendUriGetter: () => new Uri(RegTestFixture.BackendEndPoint));
+			WasabiSynchronizer synchronizer = new(bitcoinStore, httpClientFactory);
+			synchronizer.Start(requestInterval: TimeSpan.FromSeconds(3), 10000); // Start wasabi synchronizer service.
 
 			Money denomination = Money.Coins(0.1m);
 			decimal coordinatorFeePercent = 0.1m;
@@ -1212,18 +1220,27 @@ namespace WalletWasabi.Tests.RegressionTests
 			var tx4 = await rpc.GetRawTransactionAsync(txId4);
 			await rpc.GenerateAsync(1);
 			var height = await rpc.GetBlockCountAsync();
+			SmartTransaction stx1 = new(tx1, height);
+			SmartTransaction stx2 = new(tx2, height);
+			SmartTransaction stx3 = new(tx3, height);
+			SmartTransaction stx4 = new(tx4, height);
+
 			var bech1Coin = tx1.Outputs.GetCoins(bech1.ScriptPubKey).Single();
 			var bech2Coin = tx2.Outputs.GetCoins(bech2.ScriptPubKey).Single();
 			var bech3Coin = tx3.Outputs.GetCoins(bech3.ScriptPubKey).Single();
 			var bech4Coin = tx4.Outputs.GetCoins(bech4.ScriptPubKey).Single();
 
-			var smartCoin1 = new SmartCoin(bech1Coin, tx1.Inputs.ToOutPoints().ToArray(), height, replaceable: false, anonymitySet: tx1.GetAnonymitySet(bech1Coin.Outpoint.N));
-			var smartCoin2 = new SmartCoin(bech2Coin, tx2.Inputs.ToOutPoints().ToArray(), height, replaceable: false, anonymitySet: tx2.GetAnonymitySet(bech2Coin.Outpoint.N));
-			var smartCoin3 = new SmartCoin(bech3Coin, tx3.Inputs.ToOutPoints().ToArray(), height, replaceable: false, anonymitySet: tx3.GetAnonymitySet(bech3Coin.Outpoint.N));
-			var smartCoin4 = new SmartCoin(bech4Coin, tx4.Inputs.ToOutPoints().ToArray(), height, replaceable: false, anonymitySet: tx4.GetAnonymitySet(bech4Coin.Outpoint.N));
+			SmartCoin smartCoin1 = new(stx1, bech1Coin.Outpoint.N, key1);
+			SmartCoin smartCoin2 = new(stx2, bech2Coin.Outpoint.N, key2);
+			SmartCoin smartCoin3 = new(stx3, bech3Coin.Outpoint.N, key3);
+			SmartCoin smartCoin4 = new(stx4, bech4Coin.Outpoint.N, key4);
+			key1.SetAnonymitySet(tx1.GetAnonymitySet(bech1Coin.Outpoint.N), tx1.GetHash());
+			key2.SetAnonymitySet(tx2.GetAnonymitySet(bech2Coin.Outpoint.N), tx2.GetHash());
+			key3.SetAnonymitySet(tx3.GetAnonymitySet(bech3Coin.Outpoint.N), tx3.GetHash());
+			key4.SetAnonymitySet(tx4.GetAnonymitySet(bech4Coin.Outpoint.N), tx4.GetHash());
 
-			var chaumianClient1 = new CoinJoinClient(synchronizer, rpc.Network, keyManager);
-			var chaumianClient2 = new CoinJoinClient(synchronizer, rpc.Network, keyManager);
+			CoinJoinClient chaumianClient1 = new(synchronizer, rpc.Network, keyManager, new Kitchen());
+			CoinJoinClient chaumianClient2 = new(synchronizer, rpc.Network, keyManager, new Kitchen());
 			try
 			{
 				chaumianClient1.Start(); // Exactly delay it for 2 seconds, this will make sure of timeout later.
@@ -1242,8 +1259,13 @@ namespace WalletWasabi.Tests.RegressionTests
 				Assert.True(smartCoin1.CoinJoinInProgress);
 				Assert.True(smartCoin2.CoinJoinInProgress);
 
+				var randomKey = keyManager.GenerateNewKey(SmartLabel.Empty, KeyState.Clean, isInternal: false);
 				// Make sure it does not throw.
-				await chaumianClient1.DequeueCoinsFromMixAsync(new SmartCoin(network.Consensus.ConsensusFactory.CreateTransaction().GetHash(), 1, new Script(), Money.Parse("3"), new[] { new OutPoint(uint256.One, 0) }, Height.Mempool, replaceable: false, anonymitySet: 1), DequeueReason.UserRequested);
+				var randomTx = network.Consensus.ConsensusFactory.CreateTransaction();
+				randomTx.Outputs.Add(new TxOut(Money.Coins(3m), randomKey.P2wpkhScript));
+				SmartTransaction randomStx = new(randomTx, Height.Mempool);
+				await chaumianClient1.DequeueCoinsFromMixAsync(new SmartCoin(randomStx, 0, randomKey), DequeueReason.UserRequested);
+				randomKey.SetAnonymitySet(1, randomStx.GetHash());
 
 				Assert.True(2 == (await chaumianClient1.QueueCoinsToMixAsync(password, smartCoin1, smartCoin2)).Count());
 				await chaumianClient1.DequeueCoinsFromMixAsync(smartCoin1, DequeueReason.UserRequested);
@@ -1274,10 +1296,12 @@ namespace WalletWasabi.Tests.RegressionTests
 					await Task.Delay(1000);
 				}
 
-				var cj = (await rpc.GetRawMempoolAsync()).Single();
-				smartCoin1.SpenderTransactionId = cj;
-				smartCoin2.SpenderTransactionId = cj;
-				smartCoin3.SpenderTransactionId = cj;
+				var cjHash = (await rpc.GetRawMempoolAsync()).Single();
+				var cj = await rpc.GetRawTransactionAsync(cjHash);
+				SmartTransaction sCj = new(cj, Height.Mempool);
+				smartCoin1.SpenderTransaction = sCj;
+				smartCoin2.SpenderTransaction = sCj;
+				smartCoin3.SpenderTransaction = sCj;
 
 				// Make sure if times out, it tries again.
 				connectionConfirmationTimeout = 1;
@@ -1340,10 +1364,10 @@ namespace WalletWasabi.Tests.RegressionTests
 
 			// Create the services.
 			// 1. Create connection service.
-			var nodes = new NodesGroup(global.Config.Network, requirements: WalletWasabi.Helpers.Constants.NodeRequirements);
+			NodesGroup nodes = new(global.Config.Network, requirements: WalletWasabi.Helpers.Constants.NodeRequirements);
 			nodes.ConnectedNodes.Add(await RegTestFixture.BackendRegTestNode.CreateNewP2pNodeAsync());
 
-			var nodes2 = new NodesGroup(global.Config.Network, requirements: WalletWasabi.Helpers.Constants.NodeRequirements);
+			NodesGroup nodes2 = new(global.Config.Network, requirements: WalletWasabi.Helpers.Constants.NodeRequirements);
 			nodes2.ConnectedNodes.Add(await RegTestFixture.BackendRegTestNode.CreateNewP2pNodeAsync());
 
 			// 2. Create mempool service.
@@ -1355,11 +1379,9 @@ namespace WalletWasabi.Tests.RegressionTests
 			node2.Behaviors.Add(bitcoinStore.CreateUntrustedP2pBehavior());
 
 			// 3. Create wasabi synchronizer service.
-			var wasabiClientFactory = new WasabiClientFactory(torEndPoint: null, backendUriGetter: () => new Uri(RegTestFixture.BackendEndPoint));
-			var synchronizer = new WasabiSynchronizer(network, bitcoinStore, wasabiClientFactory);
-
-			var indexFilePath2 = Path.Combine(Tests.Common.GetWorkDir(), $"Index{network}2.dat");
-			var synchronizer2 = new WasabiSynchronizer(network, bitcoinStore, wasabiClientFactory);
+			using HttpClientFactory httpClientFactory = new(torEndPoint: null, backendUriGetter: () => new Uri(RegTestFixture.BackendEndPoint));
+			WasabiSynchronizer synchronizer = new(bitcoinStore, httpClientFactory);
+			HybridFeeProvider feeProvider = new(synchronizer, null);
 
 			// 4. Create key manager service.
 			var keyManager = KeyManager.CreateNew(out _, password);
@@ -1367,21 +1389,21 @@ namespace WalletWasabi.Tests.RegressionTests
 			var keyManager2 = KeyManager.CreateNew(out _, password);
 
 			// 5. Create wallet service.
-			var workDir = Tests.Common.GetWorkDir();
+			var workDir = Helpers.Common.GetWorkDir();
 
-			CachedBlockProvider blockProvider = new CachedBlockProvider(
-				new P2pBlockProvider(nodes, null, synchronizer, serviceConfiguration, network),
+			CachedBlockProvider blockProvider = new(
+				new P2pBlockProvider(nodes, null, httpClientFactory, serviceConfiguration, network),
 				bitcoinStore.BlockRepository);
 
-			CachedBlockProvider blockProvider2 = new CachedBlockProvider(
-				new P2pBlockProvider(nodes2, null, synchronizer, serviceConfiguration, network),
+			CachedBlockProvider blockProvider2 = new(
+				new P2pBlockProvider(nodes2, null, httpClientFactory, serviceConfiguration, network),
 				bitcoinStore.BlockRepository);
 
-			using var wallet = Wallet.CreateAndRegisterServices(network, bitcoinStore, keyManager, synchronizer, nodes, workDir, serviceConfiguration, synchronizer, blockProvider);
+			using var wallet = Wallet.CreateAndRegisterServices(network, bitcoinStore, keyManager, synchronizer, workDir, serviceConfiguration, feeProvider, blockProvider);
 			wallet.NewFilterProcessed += Common.Wallet_NewFilterProcessed;
 
-			var workDir2 = Path.Combine(Tests.Common.GetWorkDir(), "2");
-			using var wallet2 = Wallet.CreateAndRegisterServices(network, bitcoinStore, keyManager2, synchronizer2, nodes2, workDir2, serviceConfiguration, synchronizer2, blockProvider2);
+			var workDir2 = Path.Combine(Helpers.Common.GetWorkDir(), "2");
+			using var wallet2 = Wallet.CreateAndRegisterServices(network, bitcoinStore, keyManager2, synchronizer, workDir2, serviceConfiguration, feeProvider, blockProvider2);
 
 			// Get some money, make it confirm.
 			var key = keyManager.GetNextReceiveKey("fundZeroLink", out _);
@@ -1401,11 +1423,12 @@ namespace WalletWasabi.Tests.RegressionTests
 				Interlocked.Exchange(ref Common.FiltersProcessedByWalletCount, 0);
 				nodes.Connect(); // Start connection service.
 				node.VersionHandshake(); // Start mempool service.
-				synchronizer.Start(requestInterval: TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(5), 10000); // Start wasabi synchronizer service.
+				synchronizer.Start(requestInterval: TimeSpan.FromSeconds(3), 10000); // Start wasabi synchronizer service.
+
+				await feeProvider.StartAsync(CancellationToken.None);
 
 				nodes2.Connect(); // Start connection service.
 				node2.VersionHandshake(); // Start mempool service.
-				synchronizer2.Start(requestInterval: TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(5), 10000); // Start wasabi synchronizer service.
 
 				// Wait until the filter our previous transaction is present.
 				var blockCount = await rpc.GetBlockCountAsync();
@@ -1447,6 +1470,11 @@ namespace WalletWasabi.Tests.RegressionTests
 				Task timeout = Task.Delay(TimeSpan.FromSeconds(2 * (1 + 11 + 7 + 3 * (3 + 7))));
 				while (wallet.Coins.Count() != 4)
 				{
+					// Make sure CJ confirms.
+					if ((await rpc.GetRawMempoolAsync()).Any())
+					{
+						await rpc.GenerateAsync(1);
+					}
 					if (timeout.IsCompletedSuccessfully)
 					{
 						throw new TimeoutException("CoinJoin was not propagated or did not arrive.");
@@ -1455,7 +1483,7 @@ namespace WalletWasabi.Tests.RegressionTests
 				}
 
 				var times = 0;
-				while (wallet.Coins.FirstOrDefault(x => x.Label.IsEmpty) is null)
+				while (wallet.Coins.FirstOrDefault(x => x.HdPubKey.Label.IsEmpty) is null)
 				{
 					await Task.Delay(1000);
 					times++;
@@ -1489,28 +1517,22 @@ namespace WalletWasabi.Tests.RegressionTests
 				var allCoins = wallet.TransactionProcessor.Coins.AsAllCoinsView().ToArray();
 				var allCoins2 = wallet2.TransactionProcessor.Coins.AsAllCoinsView().ToArray();
 
-				Assert.Equal(4, allCoins.Count(x => x.Label.IsEmpty && !x.Unavailable));
-				Assert.Equal(3, allCoins2.Count(x => x.Label.IsEmpty && !x.Unavailable));
-				Assert.Equal(2, allCoins.Count(x => x.Label.IsEmpty && !x.Unspent));
-				Assert.Equal(0, allCoins2.Count(x => x.Label.IsEmpty && !x.Unspent));
-				Assert.Equal(3, allCoins2.Count(x => x.Label.IsEmpty));
-				Assert.Equal(4, allCoins.Count(x => x.Label.IsEmpty && x.Unspent));
+				Assert.Equal(4, allCoins.Count(x => x.HdPubKey.Label.IsEmpty && x.IsAvailable()));
+				Assert.Equal(3, allCoins2.Count(x => x.HdPubKey.Label.IsEmpty && x.IsAvailable()));
+				Assert.Equal(2, allCoins.Count(x => x.HdPubKey.Label.IsEmpty && x.IsSpent()));
+				Assert.Equal(0, allCoins2.Count(x => x.HdPubKey.Label.IsEmpty && x.IsSpent()));
+				Assert.Equal(3, allCoins2.Count(x => x.HdPubKey.Label.IsEmpty));
+				Assert.Equal(4, allCoins.Count(x => x.HdPubKey.Label.IsEmpty && !x.IsSpent()));
 			}
 			finally
 			{
 				wallet.NewFilterProcessed -= Common.Wallet_NewFilterProcessed;
 				await wallet.StopAsync(CancellationToken.None);
-				// Dispose connection service.
 				nodes?.Dispose();
-				// Dispose mempool serving node.
 				node?.Disconnect();
 				await wallet2.StopAsync(CancellationToken.None);
-				// Dispose wasabi synchronizer service.
-				if (synchronizer is { })
-				{
-					await synchronizer.StopAsync();
-				}
-				// Dispose connection service.
+				await synchronizer.StopAsync();
+				await feeProvider.StopAsync(CancellationToken.None);
 				nodes2?.Dispose();
 			}
 		}
@@ -1531,8 +1553,7 @@ namespace WalletWasabi.Tests.RegressionTests
 				request.ChangeOutputAddress,
 				request.BlindedOutputScripts,
 				request.Inputs,
-				() => BaseUri,
-				null);
+				BackendClearnetHttpClient);
 		}
 	}
 }

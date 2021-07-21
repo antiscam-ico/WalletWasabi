@@ -1,132 +1,74 @@
 using System;
-using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using WalletWasabi.Bases;
 using WalletWasabi.Logging;
-using WalletWasabi.Tor.Exceptions;
 using WalletWasabi.Tor.Http;
+using WalletWasabi.Tor.Socks5.Exceptions;
 using WalletWasabi.Tor.Socks5.Models.Fields.OctetFields;
+using WalletWasabi.Tor.Socks5.Pool;
 
 namespace WalletWasabi.Tor
 {
 	/// <summary>
 	/// Monitors Tor process.
 	/// </summary>
-	public class TorMonitor
+	public class TorMonitor : PeriodicRunner
 	{
-		public static readonly TimeSpan TorMisbehaviorCheckPeriod = TimeSpan.FromSeconds(3);
 		public static readonly TimeSpan CheckIfRunningAfterTorMisbehavedFor = TimeSpan.FromSeconds(7);
-
-		private const long StateNotStarted = 0;
-
-		private const long StateRunning = 1;
-
-		private const long StateStopping = 2;
-
-		private const long StateStopped = 3;
-
-		/// <summary>
-		/// Value can be any of: <see cref="StateNotStarted"/>, <see cref="StateRunning"/>, <see cref="StateStopping"/> and <see cref="StateStopped"/>.
-		/// </summary>
-		private long _monitorState;
 
 		/// <summary>
 		/// Creates a new instance of the object.
 		/// </summary>
-		public TorMonitor(TorProcessManager torProcessManager)
+		public TorMonitor(TimeSpan period, Uri fallbackBackendUri, TorHttpClient httpClient, TorProcessManager torProcessManager) : base(period)
 		{
-			_monitorState = StateNotStarted;
-			MonitorCts = new CancellationTokenSource();
+			FallbackBackendUri = fallbackBackendUri;
+			HttpClient = httpClient;
 			TorProcessManager = torProcessManager;
 		}
 
 		public static bool RequestFallbackAddressUsage { get; private set; } = false;
-
-		private CancellationTokenSource MonitorCts { get; set; }
-
+		private Uri FallbackBackendUri { get; }
+		private TorHttpClient HttpClient { get; }
 		private TorProcessManager TorProcessManager { get; }
 
-		public bool IsRunning => Interlocked.Read(ref _monitorState) == StateRunning;
-
-		public void StartMonitor(Uri fallBackTestRequestUri, EndPoint torSocks5EndPoint)
+		/// <inheritdoc/>
+		protected override async Task ActionAsync(CancellationToken token)
 		{
-			Logger.LogInfo("Starting Tor monitor...");
-			if (Interlocked.CompareExchange(ref _monitorState, StateRunning, StateNotStarted) != StateNotStarted)
+			if (TorHttpPool.TorDoesntWorkSince is { }) // If Tor misbehaves.
 			{
-				return;
-			}
+				TimeSpan torMisbehavedFor = DateTimeOffset.UtcNow - TorHttpPool.TorDoesntWorkSince ?? TimeSpan.Zero;
 
-			Task.Run(async () =>
-			{
-				try
+				if (torMisbehavedFor > CheckIfRunningAfterTorMisbehavedFor)
 				{
-					while (IsRunning)
+					if (TorHttpPool.LatestTorException is TorConnectCommandFailedException torEx)
 					{
-						try
+						if (torEx.RepField == RepField.HostUnreachable)
 						{
-							await Task.Delay(TorMisbehaviorCheckPeriod, MonitorCts.Token).ConfigureAwait(false);
+							Logger.LogInfo("Tor does not work properly. Test fallback URI.");
+							using HttpRequestMessage request = new(HttpMethod.Get, FallbackBackendUri);
+							using var _ = await HttpClient.SendAsync(request, token).ConfigureAwait(false);
 
-							if (TorHttpClient.TorDoesntWorkSince is { }) // If Tor misbehaves.
+							// Check if it changed in the meantime...
+							if (TorHttpPool.LatestTorException is TorConnectCommandFailedException torEx2 && torEx2.RepField == RepField.HostUnreachable)
 							{
-								TimeSpan torMisbehavedFor = DateTimeOffset.UtcNow - TorHttpClient.TorDoesntWorkSince ?? TimeSpan.Zero;
-
-								if (torMisbehavedFor > CheckIfRunningAfterTorMisbehavedFor)
-								{
-									if (TorHttpClient.LatestTorException is TorSocks5FailureResponseException torEx)
-									{
-										if (torEx.RepField == RepField.HostUnreachable)
-										{
-											Uri baseUri = new Uri($"{fallBackTestRequestUri.Scheme}://{fallBackTestRequestUri.DnsSafeHost}");
-											using (var client = new TorHttpClient(baseUri, torSocks5EndPoint))
-											{
-												var message = new HttpRequestMessage(HttpMethod.Get, fallBackTestRequestUri);
-												await client.SendAsync(message, MonitorCts.Token).ConfigureAwait(false);
-											}
-
-											// Check if it changed in the meantime...
-											if (TorHttpClient.LatestTorException is TorSocks5FailureResponseException torEx2 && torEx2.RepField == RepField.HostUnreachable)
-											{
-												// Fallback here...
-												RequestFallbackAddressUsage = true;
-											}
-										}
-									}
-									else
-									{
-										Logger.LogInfo($"Tor did not work properly for {(int)torMisbehavedFor.TotalSeconds} seconds. Maybe it crashed. Attempting to start it...");
-										await TorProcessManager.StartAsync(ensureRunning: true).ConfigureAwait(false); // Try starting Tor, if it does not work it'll be another issue.
-									}
-								}
+								// Fallback here...
+								RequestFallbackAddressUsage = true;
 							}
 						}
-						catch (Exception ex) when (ex is OperationCanceledException || ex is TaskCanceledException || ex is TimeoutException)
+					}
+					else
+					{
+						bool isRunning = await HttpClient.IsTorRunningAsync().ConfigureAwait(false);
+
+						if (isRunning)
 						{
-							Logger.LogTrace(ex);
-						}
-						catch (Exception ex)
-						{
-							Logger.LogDebug(ex);
+							Logger.LogInfo("Tor is running. Waiting for a confirmation that HTTP requests can pass through.");
 						}
 					}
 				}
-				finally
-				{
-					Interlocked.CompareExchange(ref _monitorState, StateStopped, StateStopping); // If IsStopping, make it stopped.
-				}
-			});
-		}
-
-		public async Task StopAsync()
-		{
-			Interlocked.CompareExchange(ref _monitorState, StateStopping, StateRunning); // If running, make it stopping.
-
-			MonitorCts?.Cancel();
-			while (Interlocked.CompareExchange(ref _monitorState, StateStopped, StateNotStarted) == StateStopping)
-			{
-				await Task.Delay(50).ConfigureAwait(false);
 			}
-			MonitorCts?.Dispose();
 		}
 	}
 }

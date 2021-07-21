@@ -33,13 +33,13 @@
     <!-- Define main app icon. -->
     <Icon
       Id="icon.ico"
-      SourceFile="$(var.WalletWasabi.Gui.ProjectDir)\Assets\WasabiLogo.ico" />
+      SourceFile="$(var.WalletWasabi.Fluent.Desktop.ProjectDir)\Assets\WasabiLogo.ico" />
 
     <!-- Add/Remove programs: https://www.firegiant.com/wix/tutorial/com-expression-syntax-miscellanea/add-or-remove-programs-entries/ -->
     <!-- any comments -->
     <Property Id='ARPCOMMENTS'>!(loc.Description)</Property>
     <!-- URL for technical support -->
-    <Property Id='ARPHELPLINK'>https://www.reddit.com/r/WasabiWallet/</Property>
+    <Property Id='ARPHELPLINK'>https://github.com/zkSNACKs/WalletWasabi/discussions/5185</Property>
     <!-- URL for general info about the product -->
     <Property Id="ARPURLINFOABOUT">https://github.com/zkSNACKs/WalletWasabi/</Property>
     <!-- Use the icon.ico icon for this installer. -->

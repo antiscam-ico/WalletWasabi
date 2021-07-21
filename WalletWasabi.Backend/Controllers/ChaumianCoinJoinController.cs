@@ -165,7 +165,7 @@ namespace WalletWasabi.Backend.Controllers
 					}
 
 					var alicesToRemove = new HashSet<Guid>();
-					var getTxOutResponses = new List<(InputProofModel inputModel, Task<GetTxOutResponse> getTxOutTask)>();
+					var getTxOutResponses = new List<(InputProofModel inputModel, Task<GetTxOutResponse?> getTxOutTask)>();
 
 					var batch = RpcClient.PrepareBatch();
 
@@ -198,7 +198,7 @@ namespace WalletWasabi.Backend.Controllers
 					await batch.SendBatchAsync();
 
 					byte[] blindedOutputScriptHashesByte = ByteHelpers.Combine(blindedOutputs.Select(x => x.BlindedOutput.ToBytes()));
-					uint256 blindedOutputScriptsHash = new uint256(Hashes.SHA256(blindedOutputScriptHashesByte));
+					uint256 blindedOutputScriptsHash = new(Hashes.SHA256(blindedOutputScriptHashesByte));
 
 					var inputs = new HashSet<Coin>();
 
@@ -217,12 +217,7 @@ namespace WalletWasabi.Backend.Controllers
 						// Check if unconfirmed.
 						if (getTxOutResponse.Confirmations <= 0)
 						{
-							// If it spends a CJ then it may be acceptable to register.
-							if (!await Coordinator.ContainsUnconfirmedCoinJoinAsync(inputProof.Input.Hash))
-							{
-								return BadRequest("Provided input is neither confirmed, nor is from an unconfirmed coinjoin.");
-							}
-							allInputsConfirmed = false;
+							return BadRequest("Provided input is unconfirmed.");
 						}
 
 						// Check if immature.
@@ -280,7 +275,7 @@ namespace WalletWasabi.Backend.Controllers
 					var moneySoFar = Money.Zero;
 					for (int i = 1; i < blindedOutputCount; i++)
 					{
-						if (!round.MixingLevels.TryGetDenomination(i, out Money denomination))
+						if (!round.MixingLevels.TryGetDenomination(i, out var denomination))
 						{
 							break;
 						}
@@ -326,12 +321,7 @@ namespace WalletWasabi.Backend.Controllers
 					// Progress round if needed.
 					if (round.CountAlices() >= round.AnonymitySet)
 					{
-						await round.RemoveAlicesIfAnInputRefusedByMempoolAsync();
-
-						if (round.CountAlices() >= round.AnonymitySet)
-						{
-							await round.ExecuteNextPhaseAsync(RoundPhase.ConnectionConfirmation);
-						}
+						await round.ExecuteNextPhaseAsync(RoundPhase.ConnectionConfirmation);
 					}
 
 					var resp = new InputsResponse
@@ -354,7 +344,7 @@ namespace WalletWasabi.Backend.Controllers
 		/// </summary>
 		/// <param name="uniqueId">Unique identifier, obtained previously.</param>
 		/// <param name="roundId">Round identifier, obtained previously.</param>
-		/// <returns>Current phase and blinded output sinatures if Alice is found.</returns>
+		/// <returns>Current phase and blinded output signatures if Alice is found.</returns>
 		/// <response code="200">Current phase and blinded output signatures if Alice is found.</response>
 		/// <response code="400">The provided uniqueId or roundId was malformed.</response>
 		/// <response code="404">If Alice or the round is not found.</response>
@@ -417,7 +407,7 @@ namespace WalletWasabi.Backend.Controllers
 		/// <param name="uniqueId">Unique identifier, obtained previously.</param>
 		/// <param name="roundId">Round identifier, obtained previously.</param>
 		/// <response code="200">Alice or the round was not found.</response>
-		/// <response code="204">Alice sucessfully unconfirmed her participation.</response>
+		/// <response code="204">Alice successfully unconfirmed her participation.</response>
 		/// <response code="400">The provided uniqueId or roundId was malformed.</response>
 		/// <response code="410">Participation can be only unconfirmed from a Running round's InputRegistration phase.</response>
 		[HttpPost("unconfirmation")]
@@ -444,7 +434,7 @@ namespace WalletWasabi.Backend.Controllers
 				return Ok("Round not found.");
 			}
 
-			Alice alice = round.TryGetAliceBy(uniqueIdGuid);
+			var alice = round.TryGetAliceBy(uniqueIdGuid);
 
 			if (alice is null)
 			{
@@ -539,10 +529,9 @@ namespace WalletWasabi.Backend.Controllers
 			{
 				using (await OutputLock.LockAsync())
 				{
-					Bob bob = null;
 					try
 					{
-						bob = new Bob(request.OutputAddress, mixinglevel);
+						var bob = new Bob(request.OutputAddress, mixinglevel);
 						round.AddBob(bob);
 						round.AddRegisteredUnblindedSignature(request.UnblindedSignature);
 					}
@@ -606,7 +595,7 @@ namespace WalletWasabi.Backend.Controllers
 						}
 						else
 						{
-							return NotFound("Hex not found. This is impossible.");
+							return NotFound("Hex not found. This should never happen.");
 						}
 					}
 				default:
@@ -666,7 +655,7 @@ namespace WalletWasabi.Backend.Controllers
 							foreach (var signaturePair in signatures)
 							{
 								int index = signaturePair.Key;
-								WitScript witness = null;
+								WitScript witness;
 								try
 								{
 									witness = new WitScript(signaturePair.Value);
@@ -728,17 +717,13 @@ namespace WalletWasabi.Backend.Controllers
 		/// <response code="200">An array of transaction Ids</response>
 		[HttpGet("unconfirmed-coinjoins")]
 		[ProducesResponseType(200)]
-		public async Task<IActionResult> GetUnconfirmedCoinjoinsAsync()
+		public IActionResult GetUnconfirmedCoinjoins()
 		{
-			IEnumerable<string> unconfirmedCoinJoinString = (await GetUnconfirmedCoinJoinCollectionAsync()).Select(x => x.ToString());
+			IEnumerable<string> unconfirmedCoinJoinString = GetUnconfirmedCoinJoinCollection().Select(x => x.ToString());
 			return Ok(unconfirmedCoinJoinString);
 		}
 
-		internal async Task<IEnumerable<uint256>> GetUnconfirmedCoinJoinCollectionAsync()
-		{
-			var unconfirmedCoinJoins = await Global.Coordinator.GetUnconfirmedCoinJoinsAsync();
-			return unconfirmedCoinJoins;
-		}
+		internal IEnumerable<uint256> GetUnconfirmedCoinJoinCollection() => Global.Coordinator.GetUnconfirmedCoinJoins();
 
 		private Guid GetGuidOrFailureResponse(string uniqueId, out IActionResult returnFailureResponse)
 		{
@@ -788,7 +773,7 @@ namespace WalletWasabi.Backend.Controllers
 				return (null, null);
 			}
 
-			Alice alice = round.TryGetAliceBy(uniqueIdGuid);
+			var alice = round.TryGetAliceBy(uniqueIdGuid);
 			if (alice is null)
 			{
 				returnFailureResponse = NotFound("Alice not found.");
@@ -823,11 +808,11 @@ namespace WalletWasabi.Backend.Controllers
 		/// <summary>
 		/// 409
 		/// </summary>
-		private ContentResult Conflict(string content) => new ContentResult() { StatusCode = (int)HttpStatusCode.Conflict, ContentType = "application/json; charset=utf-8", Content = $"\"{content}\"" };
+		private ContentResult Conflict(string content) => new() { StatusCode = (int)HttpStatusCode.Conflict, ContentType = "application/json; charset=utf-8", Content = $"\"{content}\"" };
 
 		/// <summary>
 		/// 410
 		/// </summary>
-		private ContentResult Gone(string content) => new ContentResult() { StatusCode = (int)HttpStatusCode.Gone, ContentType = "application/json; charset=utf-8", Content = $"\"{content}\"" };
+		private ContentResult Gone(string content) => new() { StatusCode = (int)HttpStatusCode.Gone, ContentType = "application/json; charset=utf-8", Content = $"\"{content}\"" };
 	}
 }

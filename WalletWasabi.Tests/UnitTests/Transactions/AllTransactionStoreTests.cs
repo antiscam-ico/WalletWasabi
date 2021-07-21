@@ -8,6 +8,7 @@ using WalletWasabi.Blockchain.Analysis.Clustering;
 using WalletWasabi.Blockchain.Transactions;
 using WalletWasabi.Helpers;
 using WalletWasabi.Models;
+using WalletWasabi.Tests.Helpers;
 using Xunit;
 
 namespace WalletWasabi.Tests.UnitTests.Transactions
@@ -76,7 +77,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 		public async Task CanInitializeEmptyAsync(Network network)
 		{
 			var dir = PrepareWorkDir();
-			var txStore = new AllTransactionStore(dir, network);
+			await using var txStore = new AllTransactionStore(dir, network);
 			await txStore.InitializeAsync(ensureBackwardsCompatibility: false);
 
 			Assert.NotNull(txStore.ConfirmedStore);
@@ -88,7 +89,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			Assert.Empty(txStore.ConfirmedStore.GetTransactions());
 			Assert.Empty(txStore.ConfirmedStore.GetTransactionHashes());
 
-			uint256 txHash = Common.GetRandomSmartTransaction().GetHash();
+			uint256 txHash = BitcoinFactory.CreateSmartTransaction().GetHash();
 			Assert.False(txStore.Contains(txHash));
 			Assert.True(txStore.IsEmpty());
 			Assert.False(txStore.TryGetTransaction(txHash, out _));
@@ -136,7 +137,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			await File.WriteAllLinesAsync(mempoolFile, mempoolFileContent);
 			await File.WriteAllLinesAsync(txFile, txFileContent);
 
-			var txStore = new AllTransactionStore(dir, network);
+			await using var txStore = new AllTransactionStore(dir, network);
 			await txStore.InitializeAsync(ensureBackwardsCompatibility: false);
 
 			Assert.Equal(6, txStore.GetTransactions().Count());
@@ -147,7 +148,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			Assert.Equal(3, txStore.ConfirmedStore.GetTransactionHashes().Count());
 			Assert.False(txStore.IsEmpty());
 
-			uint256 doesntContainTxHash = Common.GetRandomSmartTransaction().GetHash();
+			uint256 doesntContainTxHash = BitcoinFactory.CreateSmartTransaction().GetHash();
 			Assert.False(txStore.Contains(doesntContainTxHash));
 			Assert.False(txStore.TryGetTransaction(doesntContainTxHash, out _));
 
@@ -157,12 +158,12 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			Assert.True(txStore.Contains(cTx2.GetHash()));
 			Assert.True(txStore.Contains(cTx2.GetHash()));
 			Assert.True(txStore.Contains(cTx3.GetHash()));
-			Assert.True(txStore.TryGetTransaction(uTx1.GetHash(), out SmartTransaction uTx1Same));
-			Assert.True(txStore.TryGetTransaction(uTx2.GetHash(), out SmartTransaction uTx2Same));
-			Assert.True(txStore.TryGetTransaction(uTx3.GetHash(), out SmartTransaction uTx3Same));
-			Assert.True(txStore.TryGetTransaction(cTx1.GetHash(), out SmartTransaction cTx1Same));
-			Assert.True(txStore.TryGetTransaction(cTx2.GetHash(), out SmartTransaction cTx2Same));
-			Assert.True(txStore.TryGetTransaction(cTx3.GetHash(), out SmartTransaction cTx3Same));
+			Assert.True(txStore.TryGetTransaction(uTx1.GetHash(), out var uTx1Same));
+			Assert.True(txStore.TryGetTransaction(uTx2.GetHash(), out var uTx2Same));
+			Assert.True(txStore.TryGetTransaction(uTx3.GetHash(), out var uTx3Same));
+			Assert.True(txStore.TryGetTransaction(cTx1.GetHash(), out var cTx1Same));
+			Assert.True(txStore.TryGetTransaction(cTx2.GetHash(), out var cTx2Same));
+			Assert.True(txStore.TryGetTransaction(cTx3.GetHash(), out var cTx3Same));
 			Assert.Equal(uTx1, uTx1Same);
 			Assert.Equal(uTx2, uTx2Same);
 			Assert.Equal(uTx3, uTx3Same);
@@ -194,7 +195,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			await File.WriteAllLinesAsync(mempoolFile, mempoolFileContent);
 			await File.WriteAllLinesAsync(txFile, txFileContent);
 
-			var txStore = new AllTransactionStore(dir, network);
+			await using var txStore = new AllTransactionStore(dir, network);
 			await txStore.InitializeAsync(ensureBackwardsCompatibility: false);
 
 			Assert.Equal(6, txStore.GetTransactions().Count());
@@ -229,7 +230,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			await File.WriteAllLinesAsync(mempoolFile, mempoolFileContent);
 			await File.WriteAllLinesAsync(txFile, txFileContent);
 
-			var txStore = new AllTransactionStore(dir, network);
+			await using var txStore = new AllTransactionStore(dir, network);
 			await txStore.InitializeAsync(ensureBackwardsCompatibility: false);
 
 			Assert.Equal(6, txStore.GetTransactions().Count());
@@ -267,7 +268,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			await File.WriteAllLinesAsync(mempoolFile, mempoolFileContent);
 			await File.WriteAllLinesAsync(txFile, txFileContent);
 
-			var txStore = new AllTransactionStore(dir, network);
+			await using var txStore = new AllTransactionStore(dir, network);
 			await txStore.InitializeAsync(ensureBackwardsCompatibility: false);
 
 			Assert.Equal(6, txStore.GetTransactions().Count());
@@ -308,11 +309,6 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			await File.WriteAllLinesAsync(mempoolFile, mempoolFileContent);
 			await File.WriteAllLinesAsync(txFile, txFileContent);
 
-			var txStore = new AllTransactionStore(dir, network);
-			await txStore.InitializeAsync(ensureBackwardsCompatibility: false);
-
-			var txs = txStore.GetTransactions();
-			var txHashes = txStore.GetTransactionHashes();
 			var expectedArray = new[]
 			{
 				uTx1,
@@ -323,34 +319,44 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 				cTx3
 			}.OrderByBlockchain().ToList();
 
-			Assert.Equal(txHashes, txs.Select(x => x.GetHash()));
-			Assert.Equal(expectedArray, txs);
+			await using (var txStore = new AllTransactionStore(dir, network))
+			{
+				await txStore.InitializeAsync(ensureBackwardsCompatibility: false);
 
-			txStore = new AllTransactionStore(PrepareWorkDir(), network);
-			await txStore.InitializeAsync(ensureBackwardsCompatibility: false);
+				var txs = txStore.GetTransactions();
+				var txHashes = txStore.GetTransactionHashes();
 
-			txStore.AddOrUpdate(uTx3);
-			txStore.AddOrUpdate(uTx1);
-			txStore.AddOrUpdate(uTx2);
-			txStore.AddOrUpdate(cTx3);
-			txStore.AddOrUpdate(cTx1);
-			txStore.AddOrUpdate(cTx2);
+				Assert.Equal(txHashes, txs.Select(x => x.GetHash()));
+				Assert.Equal(expectedArray, txs);
+			}
 
-			txs = txStore.GetTransactions();
-			txHashes = txStore.GetTransactionHashes();
+			await using (var txStore = new AllTransactionStore(PrepareWorkDir(), network))
+			{
+				await txStore.InitializeAsync(ensureBackwardsCompatibility: false);
 
-			Assert.Equal(txHashes, txs.Select(x => x.GetHash()));
-			Assert.Equal(expectedArray, txs);
+				txStore.AddOrUpdate(uTx3);
+				txStore.AddOrUpdate(uTx1);
+				txStore.AddOrUpdate(uTx2);
+				txStore.AddOrUpdate(cTx3);
+				txStore.AddOrUpdate(cTx1);
+				txStore.AddOrUpdate(cTx2);
+
+				var txs = txStore.GetTransactions();
+				var txHashes = txStore.GetTransactionHashes();
+
+				Assert.Equal(txHashes, txs.Select(x => x.GetHash()));
+				Assert.Equal(expectedArray, txs);
+			}
 		}
 
 		[Theory]
 		[MemberData(nameof(GetDifferentNetworkValues))]
 		public async Task DoesntUpdateAsync(Network network)
 		{
-			var txStore = new AllTransactionStore(PrepareWorkDir(), network);
+			await using var txStore = new AllTransactionStore(PrepareWorkDir(), network);
 			await txStore.InitializeAsync(ensureBackwardsCompatibility: false);
 
-			var tx = Common.GetRandomSmartTransaction();
+			var tx = BitcoinFactory.CreateSmartTransaction();
 			Assert.False(txStore.TryUpdate(tx));
 
 			// Assert TryUpdate didn't modify anything.
@@ -364,7 +370,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			Assert.Empty(txStore.ConfirmedStore.GetTransactions());
 			Assert.Empty(txStore.ConfirmedStore.GetTransactionHashes());
 
-			uint256 txHash = Common.GetRandomSmartTransaction().GetHash();
+			uint256 txHash = BitcoinFactory.CreateSmartTransaction().GetHash();
 			Assert.False(txStore.Contains(txHash));
 			Assert.True(txStore.IsEmpty());
 			Assert.False(txStore.TryGetTransaction(txHash, out _));
@@ -400,18 +406,18 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			await File.WriteAllLinesAsync(mempoolFile, mempoolFileContent);
 			await File.WriteAllLinesAsync(txFile, txFileContent);
 
-			var txStore = new AllTransactionStore(dir, network);
+			await using var txStore = new AllTransactionStore(dir, network);
 			await txStore.InitializeAsync(ensureBackwardsCompatibility: false);
 
 			// Two transactions are in the mempool store and unconfirmed.
-			Assert.True(txStore.MempoolStore.TryGetTransaction(uTx1.GetHash(), out SmartTransaction myUnconfirmedTx1));
-			Assert.False(myUnconfirmedTx1.Confirmed);
-			Assert.True(txStore.MempoolStore.TryGetTransaction(uTx2.GetHash(), out SmartTransaction myUnconfirmedTx2));
-			Assert.False(myUnconfirmedTx2.Confirmed);
+			Assert.True(txStore.MempoolStore.TryGetTransaction(uTx1.GetHash(), out var myUnconfirmedTx1));
+			Assert.False(myUnconfirmedTx1?.Confirmed);
+			Assert.True(txStore.MempoolStore.TryGetTransaction(uTx2.GetHash(), out var myUnconfirmedTx2));
+			Assert.False(myUnconfirmedTx2?.Confirmed);
 
 			// Create the same transaction but now with a Height to make it confirmed.
 			const int ReorgedBlockHeight = 34532;
-			uint256 reorgedBlockHash = new uint256(5);
+			uint256 reorgedBlockHash = new(5);
 
 			var tx1Confirmed = new SmartTransaction(uTx1.Transaction, new Height(ReorgedBlockHeight), blockHash: reorgedBlockHash, label: "buz, qux");
 			var tx2Confirmed = new SmartTransaction(uTx2.Transaction, new Height(ReorgedBlockHeight), blockHash: reorgedBlockHash, label: "buz, qux");
@@ -419,23 +425,23 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			Assert.True(txStore.TryUpdate(tx2Confirmed));
 
 			// Two transactions are in the ConfirmedStore store and confirmed.
-			Assert.True(txStore.ConfirmedStore.TryGetTransaction(uTx1.GetHash(), out SmartTransaction mytx1));
+			Assert.True(txStore.ConfirmedStore.TryGetTransaction(uTx1.GetHash(), out var mytx1));
 			Assert.False(txStore.MempoolStore.TryGetTransaction(uTx1.GetHash(), out _));
-			Assert.True(mytx1.Confirmed);
-			Assert.True(txStore.ConfirmedStore.TryGetTransaction(uTx2.GetHash(), out SmartTransaction mytx2));
+			Assert.True(mytx1?.Confirmed);
+			Assert.True(txStore.ConfirmedStore.TryGetTransaction(uTx2.GetHash(), out var mytx2));
 			Assert.False(txStore.MempoolStore.TryGetTransaction(uTx2.GetHash(), out _));
-			Assert.True(mytx2.Confirmed);
+			Assert.True(mytx2?.Confirmed);
 
 			// Now reorg.
 			txStore.ReleaseToMempoolFromBlock(reorgedBlockHash);
 
 			// Two transactions are in the mempool store and unconfirmed.
-			Assert.True(txStore.MempoolStore.TryGetTransaction(uTx1.GetHash(), out SmartTransaction myReorgedTx1));
+			Assert.True(txStore.MempoolStore.TryGetTransaction(uTx1.GetHash(), out var myReorgedTx1));
 			Assert.False(txStore.ConfirmedStore.TryGetTransaction(uTx1.GetHash(), out _));
-			Assert.False(myReorgedTx1.Confirmed);
-			Assert.True(txStore.MempoolStore.TryGetTransaction(uTx2.GetHash(), out SmartTransaction myReorgedTx2));
+			Assert.False(myReorgedTx1?.Confirmed);
+			Assert.True(txStore.MempoolStore.TryGetTransaction(uTx2.GetHash(), out var myReorgedTx2));
 			Assert.False(txStore.ConfirmedStore.TryGetTransaction(uTx2.GetHash(), out _));
-			Assert.False(myReorgedTx2.Confirmed);
+			Assert.False(myReorgedTx2?.Confirmed);
 		}
 
 		[Fact]
@@ -446,7 +452,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			string dir = PrepareWorkDir();
 
 			var network = Network.Main;
-			var txStore = new AllTransactionStore(dir, network);
+			await using var txStore = new AllTransactionStore(dir, network);
 			await txStore.InitializeAsync(ensureBackwardsCompatibility: false);
 
 			foreach (var height in Enumerable.Range(1, blocks))
@@ -471,7 +477,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			// reorgs most recent block
 			reorgedTxs = txStore.ReleaseToMempoolFromBlock(newestConfirmedTx.BlockHash);
 			Assert.Equal(3, reorgedTxs.Count());
-			Assert.All(reorgedTxs, tx => Assert.False(tx.Confirmed));
+			Assert.All(reorgedTxs, tx => Assert.False(tx?.Confirmed));
 			Assert.All(reorgedTxs, tx => Assert.True(txStore.TryGetTransaction(tx.GetHash(), out _)));
 
 			Assert.False(txStore.TryGetTransaction(tipHash, out _));

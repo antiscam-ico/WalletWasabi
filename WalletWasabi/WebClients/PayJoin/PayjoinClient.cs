@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Threading;
@@ -14,34 +13,22 @@ using Newtonsoft.Json.Linq;
 using WalletWasabi.Blockchain.Keys;
 using WalletWasabi.Helpers;
 using WalletWasabi.Tor.Http;
-using WalletWasabi.Tor.Http.Interfaces;
 
 namespace WalletWasabi.WebClients.PayJoin
 {
 	public class PayjoinClient : IPayjoinClient
 	{
-		public PayjoinClient(Uri paymentUrl, EndPoint torSocks5EndPoint)
+		public PayjoinClient(Uri paymentUrl, IHttpClient httpClient)
 		{
-			// This can be null if Tor is turned off - and it is OK.
-			TorSocks5EndPoint = torSocks5EndPoint;
-			PaymentUrl = Guard.NotNull(nameof(paymentUrl), paymentUrl);
-			TorHttpClient = new TorHttpClient(PaymentUrl, TorSocks5EndPoint);
-		}
-
-		// For testing only
-		internal PayjoinClient(ITorHttpClient httpClient)
-		{
-			PaymentUrl = httpClient.DestinationUri;
-			TorHttpClient = Guard.NotNull(nameof(httpClient), httpClient);
+			PaymentUrl = paymentUrl;
+			HttpClient = httpClient;
 		}
 
 		public Uri PaymentUrl { get; }
-		private EndPoint TorSocks5EndPoint { get; }
-		private ITorHttpClient TorHttpClient { get; }
+		private IHttpClient HttpClient { get; }
 
 		public async Task<PSBT> RequestPayjoin(PSBT originalTx, IHDKey accountKey, RootedKeyPath rootedKeyPath, HdPubKey changeHdPubKey, CancellationToken cancellationToken)
 		{
-			Guard.NotNull(nameof(originalTx), originalTx);
 			if (originalTx.IsAllFinalized())
 			{
 				throw new InvalidOperationException("The original PSBT should not be finalized.");
@@ -73,7 +60,7 @@ namespace WalletWasabi.WebClients.PayJoin
 			var cloned = originalTx.Clone();
 			if (!cloned.TryFinalize(out var _))
 			{
-				return null;
+				throw new InvalidOperationException("The original PSBT could not be finalized.");
 			}
 
 			// We make sure we don't send unnecessary information to the receiver
@@ -91,16 +78,16 @@ namespace WalletWasabi.WebClients.PayJoin
 
 			var endpoint = ApplyOptionalParameters(PaymentUrl, optionalParameters);
 
-			var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
+			using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
 			{
 				Content = new StringContent(cloned.ToBase64(), Encoding.UTF8, "text/plain")
 			};
 
-			HttpResponseMessage bpuResponse = await TorHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+			HttpResponseMessage bpuResponse = await HttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
 
 			if (!bpuResponse.IsSuccessStatusCode)
 			{
-				var errorStr = await bpuResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
+				var errorStr = await bpuResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 				try
 				{
 					var error = JObject.Parse(errorStr);
@@ -116,7 +103,7 @@ namespace WalletWasabi.WebClients.PayJoin
 				}
 			}
 
-			var hexOrBase64 = await bpuResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
+			var hexOrBase64 = await bpuResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 			var newPSBT = PSBT.Parse(hexOrBase64, originalTx.Network);
 
 			// Checking that the PSBT of the receiver is clean
@@ -298,8 +285,10 @@ namespace WalletWasabi.WebClients.PayJoin
 			}
 
 			// Remove query from endpoint.
-			var builder = new UriBuilder(endpoint);
-			builder.Query = "";
+			var builder = new UriBuilder(endpoint)
+			{
+				Query = ""
+			};
 
 			// Construct final URI.
 			return new Uri(QueryHelpers.AddQueryString(builder.Uri.AbsoluteUri, parameters));

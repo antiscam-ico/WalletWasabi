@@ -1,8 +1,10 @@
 using NBitcoin;
+using System;
+using System.Threading;
 using System.Threading.Tasks;
+using WalletWasabi.BitcoinP2p;
 using WalletWasabi.Blockchain.Blocks;
 using WalletWasabi.Blockchain.Mempool;
-using WalletWasabi.Blockchain.P2p;
 using WalletWasabi.Blockchain.Transactions;
 using WalletWasabi.Logging;
 using WalletWasabi.Wallets;
@@ -13,7 +15,7 @@ namespace WalletWasabi.Stores
 	/// The purpose of this class is to safely and efficiently manage all the Bitcoin related data
 	/// that's being serialized to disk, like transactions, wallet files, keys, blocks, index files, etc.
 	/// </summary>
-	public class BitcoinStore
+	public class BitcoinStore : IAsyncDisposable
 	{
 		public BitcoinStore(
 			IndexStore indexStore,
@@ -27,8 +29,6 @@ namespace WalletWasabi.Stores
 			BlockRepository = blockRepository;
 		}
 
-		public bool IsInitialized { get; private set; }
-
 		public IndexStore IndexStore { get; }
 		public AllTransactionStore TransactionStore { get; }
 		public SmartHeaderChain SmartHeaderChain => IndexStore.SmartHeaderChain;
@@ -39,22 +39,26 @@ namespace WalletWasabi.Stores
 		/// This should not be a property, but a creator function, because it'll be cloned left and right by NBitcoin later.
 		/// So it should not be assumed it's some singleton.
 		/// </summary>
-		public UntrustedP2pBehavior CreateUntrustedP2pBehavior() => new UntrustedP2pBehavior(MempoolService);
+		public UntrustedP2pBehavior CreateUntrustedP2pBehavior() => new(MempoolService);
 
-		public async Task InitializeAsync()
+		public async Task InitializeAsync(CancellationToken cancel = default)
 		{
 			using (BenchmarkLogger.Measure())
 			{
 				var initTasks = new[]
 				{
-					IndexStore.InitializeAsync(),
-					TransactionStore.InitializeAsync()
+					IndexStore.InitializeAsync(cancel),
+					TransactionStore.InitializeAsync(cancel: cancel)
 				};
 
 				await Task.WhenAll(initTasks).ConfigureAwait(false);
-
-				IsInitialized = true;
 			}
+		}
+
+		public async ValueTask DisposeAsync()
+		{
+			await IndexStore.DisposeAsync().ConfigureAwait(false);
+			await TransactionStore.DisposeAsync().ConfigureAwait(false);
 		}
 	}
 }

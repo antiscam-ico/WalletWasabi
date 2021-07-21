@@ -6,9 +6,11 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using WalletWasabi.Backend.Models;
 using WalletWasabi.Backend.Models.Responses;
+using WalletWasabi.BitcoinCore.Mempool;
 using WalletWasabi.BitcoinCore.Rpc;
 using WalletWasabi.Blockchain.Analysis.FeesEstimation;
 using WalletWasabi.Helpers;
@@ -88,7 +90,7 @@ namespace WalletWasabi.Backend.Controllers
 		[ResponseCache(Duration = 3, Location = ResponseCacheLocation.Client)]
 		public async Task<IActionResult> GetMempoolHashesAsync([FromQuery] int compactness = 64)
 		{
-			if (compactness < 1 || compactness > 64)
+			if (compactness is < 1 or > 64)
 			{
 				return BadRequest("Invalid compactness parameter is provided.");
 			}
@@ -161,35 +163,25 @@ namespace WalletWasabi.Backend.Controllers
 			try
 			{
 				var hexes = new Dictionary<uint256, string>();
-				var queryRpc = false;
-				IRPCClient batchingRpc = null;
-				List<Task<Transaction>> tasks = null;
+				List<uint256> missingTxs = new();
 				lock (TransactionHexCacheLock)
 				{
 					foreach (var txid in parsedIds)
 					{
-						if (TransactionHexCache.TryGetValue(txid, out string hex))
+						if (TransactionHexCache.TryGetValue(txid, out string? hex))
 						{
 							hexes.Add(txid, hex);
 						}
 						else
 						{
-							if (!queryRpc)
-							{
-								queryRpc = true;
-								batchingRpc = RpcClient.PrepareBatch();
-								tasks = new List<Task<Transaction>>();
-							}
-							tasks.Add(batchingRpc.GetRawTransactionAsync(txid));
+							missingTxs.Add(txid);
 						}
 					}
 				}
 
-				if (queryRpc)
+				if (missingTxs.Any())
 				{
-					await batchingRpc.SendBatchAsync();
-
-					foreach (var tx in await Task.WhenAll(tasks))
+					foreach (var tx in await RpcClient.GetRawTransactionsAsync(missingTxs, CancellationToken.None))
 					{
 						string hex = tx.ToHex();
 						hexes.Add(tx.GetHash(), hex);
@@ -256,7 +248,8 @@ namespace WalletWasabi.Backend.Controllers
 			catch (RPCException ex)
 			{
 				Logger.LogDebug(ex);
-				return BadRequest(ex.Message);
+				var spenders = Global.HostedServices.Get<MempoolMirror>().GetSpenderTransactions(transaction.Inputs.Select(x => x.PrevOut));
+				return BadRequest($"{ex.Message}:::{string.Join(":::", spenders.Select(x => x.ToHex()))}");
 			}
 
 			return Ok("Transaction is successfully broadcasted.");
@@ -332,13 +325,13 @@ namespace WalletWasabi.Backend.Controllers
 			catch (Exception ex)
 			{
 				Logger.LogDebug(ex);
-				throw ex;
+				throw;
 			}
 		}
 
 		private async Task<StatusResponse> FetchStatusAsync()
 		{
-			StatusResponse status = new StatusResponse();
+			StatusResponse status = new();
 
 			// Updating the status of the filters.
 			if (DateTimeOffset.UtcNow - Global.IndexBuilderService.LastFilterBuildTime > FilterTimeout)

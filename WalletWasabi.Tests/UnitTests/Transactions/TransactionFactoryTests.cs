@@ -1,14 +1,15 @@
+using Moq;
 using NBitcoin;
 using System;
-using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using WalletWasabi.Blockchain.Analysis.Clustering;
 using WalletWasabi.Blockchain.Keys;
 using WalletWasabi.Blockchain.TransactionBuilding;
 using WalletWasabi.Blockchain.TransactionOutputs;
 using WalletWasabi.Blockchain.Transactions;
 using WalletWasabi.Exceptions;
-using WalletWasabi.Models;
+using WalletWasabi.Tests.Helpers;
 using WalletWasabi.Wallets;
 using Xunit;
 
@@ -19,7 +20,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 		[Fact]
 		public void InsufficientBalance()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("Martin", 0, 0.01m, confirmed: true, anonymitySet: 1),
 				("Jean",   1, 0.02m, confirmed: true, anonymitySet: 1)
@@ -27,7 +28,8 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 
 			// We try to spend 100btc but we only have 0.03
 			var amount = Money.Coins(100m);
-			var payment = new PaymentIntent(new Key().ScriptPubKey, amount);
+			using Key key = new();
+			var payment = new PaymentIntent(key.ScriptPubKey, amount);
 
 			var ex = Assert.Throws<InsufficientBalanceException>(() => transactionFactory.BuildTransaction(payment, new FeeRate(2m)));
 
@@ -38,12 +40,13 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 		[Fact]
 		public void TooMuchFeePaid()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("Pablo", 0, 0.0001m, confirmed: true, anonymitySet: 1)
 			});
 
-			var payment = new PaymentIntent(new Key().ScriptPubKey, MoneyRequest.CreateAllRemaining(subtractFee: true));
+			using Key key = new();
+			var payment = new PaymentIntent(key.ScriptPubKey, MoneyRequest.CreateAllRemaining(subtractFee: true));
 
 			var result = transactionFactory.BuildTransaction(payment, new FeeRate(44.25m));
 			var output = Assert.Single(result.OuterWalletOutputs);
@@ -57,14 +60,15 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 		[Fact]
 		public void SelectMostPrivateIndependentlyOfCluster()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("", 0, 0.08m, confirmed: true, anonymitySet: 50),
 				("", 1, 0.16m, confirmed: true, anonymitySet: 200)
 			});
 
 			// There is a 0.08 coin with AS=50. However it selects the most private one with AS= 200
-			var destination = new Key().ScriptPubKey;
+			using Key key = new();
+			var destination = key.ScriptPubKey;
 			var payment = new PaymentIntent(destination, Money.Coins(0.07m), label: "Sophie");
 			var feeRate = new FeeRate(2m);
 			var result = transactionFactory.BuildTransaction(payment, feeRate);
@@ -72,48 +76,48 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			Assert.True(result.Signed);
 			var spentCoin = Assert.Single(result.SpentCoins);
 			Assert.Equal(Money.Coins(0.16m), spentCoin.Amount);
-			Assert.Equal(200, spentCoin.AnonymitySet);
+			Assert.Equal(200, spentCoin.HdPubKey.AnonymitySet);
 			Assert.False(result.SpendsUnconfirmed);
 			var tx = result.Transaction.Transaction;
-			Assert.Equal(2, tx.Outputs.Count());
+			Assert.Equal(2, tx.Outputs.Count);
 
 			var changeCoin = Assert.Single(result.InnerWalletOutputs);
 			Assert.True(changeCoin.HdPubKey.IsInternal);
-			Assert.Equal("Sophie", changeCoin.Label);
+			Assert.Equal("Sophie", changeCoin.HdPubKey.Label);
 		}
 
 		[Fact]
 		public void SelectMostPrivateCoin()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("Maria",  0, 0.08m, confirmed: true, anonymitySet: 50),
 				("Joseph", 1, 0.16m, confirmed: true, anonymitySet: 200)
 			});
 
 			// There is a 0.8 coin with AS=50. However it selects the most private one with AS= 200
-			var destination = new Key().ScriptPubKey;
-			var payment = new PaymentIntent(destination, Money.Coins(0.07m), label: "Sophie");
+			using Key key = new();
+			var payment = new PaymentIntent(key.ScriptPubKey, Money.Coins(0.07m), label: "Sophie");
 			var feeRate = new FeeRate(2m);
 			var result = transactionFactory.BuildTransaction(payment, feeRate);
 
 			Assert.True(result.Signed);
 			var spentCoin = Assert.Single(result.SpentCoins);
 			Assert.Equal(Money.Coins(0.16m), spentCoin.Amount);
-			Assert.Equal(200, spentCoin.AnonymitySet);
+			Assert.Equal(200, spentCoin.HdPubKey.AnonymitySet);
 			Assert.False(result.SpendsUnconfirmed);
 			var tx = result.Transaction.Transaction;
-			Assert.Equal(2, tx.Outputs.Count());
+			Assert.Equal(2, tx.Outputs.Count);
 
 			var changeCoin = Assert.Single(result.InnerWalletOutputs);
 			Assert.True(changeCoin.HdPubKey.IsInternal);
-			Assert.Equal("Joseph, Sophie", changeCoin.Label);
+			Assert.Equal("Joseph, Sophie", changeCoin.HdPubKey.Label);
 		}
 
 		[Fact]
 		public void SelectMostPrivateCoins()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("Pablo",  0, 0.01m, confirmed: true, anonymitySet: 1),
 				("Jean",   1, 0.02m, confirmed: true, anonymitySet: 1),
@@ -123,14 +127,15 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			});
 
 			// It has to select the most private coins regardless of the amounts
-			var payment = new PaymentIntent(new Key().ScriptPubKey, Money.Coins(0.17m));
+			using Key key = new();
+			var payment = new PaymentIntent(key.ScriptPubKey, Money.Coins(0.17m));
 			var feeRate = new FeeRate(2m);
 			var result = transactionFactory.BuildTransaction(payment, feeRate);
 
 			Assert.True(result.Signed);
 			Assert.Equal(2, result.SpentCoins.Count());
-			var spentCoin200 = Assert.Single(result.SpentCoins, x => x.AnonymitySet == 200);
-			var spentCoin100 = Assert.Single(result.SpentCoins, x => x.AnonymitySet == 100);
+			var spentCoin200 = Assert.Single(result.SpentCoins, x => x.HdPubKey.AnonymitySet == 200);
+			var spentCoin100 = Assert.Single(result.SpentCoins, x => x.HdPubKey.AnonymitySet == 100);
 
 			Assert.Equal(Money.Coins(0.16m), spentCoin200.Amount);
 			Assert.Equal(Money.Coins(0.04m), spentCoin100.Amount);
@@ -138,13 +143,13 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			Assert.False(result.SpendsUnconfirmed);
 
 			var tx = result.Transaction.Transaction;
-			Assert.Equal(2, tx.Outputs.Count());
+			Assert.Equal(2, tx.Outputs.Count);
 		}
 
 		[Fact]
 		public void SelectSameScriptPubKeyCoins()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("Pablo",  0, 0.01m, confirmed: false, anonymitySet: 10),
 				("Daniel", 1, 0.02m, confirmed: false, anonymitySet: 1),
@@ -153,7 +158,8 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			});
 
 			// Selecting 0.08 + 0.04 should be enough but it has to select 0.02 too because it is the same address
-			var payment = new PaymentIntent(new Key().ScriptPubKey, Money.Coins(0.1m), label: "Sophie");
+			using Key key = new();
+			var payment = new PaymentIntent(key.ScriptPubKey, Money.Coins(0.1m), label: "Sophie");
 			var feeRate = new FeeRate(2m);
 			var result = transactionFactory.BuildTransaction(payment, feeRate);
 
@@ -163,87 +169,91 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			Assert.Equal(Money.Coins(0.14m), result.SpentCoins.Select(x => x.Amount).Sum());
 
 			var changeCoin = Assert.Single(result.InnerWalletOutputs);
-			Assert.Equal("Daniel, Maria, Sophie", changeCoin.Label);
+			Assert.Equal("Daniel, Maria, Sophie", changeCoin.HdPubKey.Label);
 
 			var tx = result.Transaction.Transaction;
 
 			// it must select the unconfirm coin even when the anonymity set is lower
 			Assert.True(result.SpendsUnconfirmed);
-			Assert.Equal(2, tx.Outputs.Count());
+			Assert.Equal(2, tx.Outputs.Count);
 		}
 
 		[Fact]
 		public void SelectSameClusterCoins()
 		{
-			var (password, keyManager) = DefaultKeyManager();
+			var password = "foo";
+			var keyManager = ServiceFactory.CreateKeyManager(password);
 
 			keyManager.AssertCleanKeysIndexed();
 
-			HdPubKey NewKey() => keyManager.GenerateNewKey("", KeyState.Used, true, false);
+			HdPubKey NewKey(string label) => keyManager.GenerateNewKey(label, KeyState.Used, true, false);
 			var scoins = new[]
 			{
-				Coin("Pablo",  NewKey(), 0.9m),
-				Coin("Daniel", NewKey(), 0.9m),
-				Coin("Adolf",  NewKey(), 0.9m),
-				Coin("Maria",  NewKey(), 0.9m),
-				Coin("Ding",   NewKey(), 0.9m),
-				Coin("Joseph", NewKey(), 0.9m),
-				Coin("Eve",    NewKey(), 0.9m),
-				Coin("Julio",  NewKey(), 0.9m),
-				Coin("Donald, Jean, Lee, Onur", NewKey(), 0.9m),
-				Coin("Satoshi", NewKey(), 0.9m)
+				BitcoinFactory.CreateSmartCoin(NewKey("Pablo"), 0.9m),
+				BitcoinFactory.CreateSmartCoin(NewKey("Daniel"), 0.9m),
+				BitcoinFactory.CreateSmartCoin(NewKey("Adolf"), 0.9m),
+				BitcoinFactory.CreateSmartCoin(NewKey("Maria"), 0.9m),
+				BitcoinFactory.CreateSmartCoin(NewKey("Ding"), 0.9m),
+				BitcoinFactory.CreateSmartCoin(NewKey("Joseph"), 0.9m),
+				BitcoinFactory.CreateSmartCoin(NewKey("Eve"), 0.9m),
+				BitcoinFactory.CreateSmartCoin(NewKey("Julio"), 0.9m),
+				BitcoinFactory.CreateSmartCoin(NewKey("Donald, Jean, Lee, Onur"), 0.9m),
+				BitcoinFactory.CreateSmartCoin(NewKey("Satoshi"), 0.9m)
 			};
-			var coinsByLabel = scoins.ToDictionary(x => x.Label);
+			var coinsByLabel = scoins.ToDictionary(x => x.HdPubKey.Label);
 
 			// cluster 1 is known by 7 people: Pablo, Daniel, Adolf, Maria, Ding, Joseph and Eve
 			var coinsCluster1 = new[] { scoins[0], scoins[1], scoins[2], scoins[3], scoins[4], scoins[5], scoins[6] };
-			var cluster1 = new Cluster(coinsCluster1);
+			var cluster1 = new Cluster(coinsCluster1.Select(x => x.HdPubKey));
 			foreach (var coin in coinsCluster1)
 			{
-				coin.Cluster = cluster1;
+				coin.HdPubKey.Cluster = cluster1;
 			}
 
 			// cluster 2 is known by 6 people: Julio, Lee, Jean, Donald, Onur and Satoshi
 			var coinsCluster2 = new[] { scoins[7], scoins[8], scoins[9] };
-			var cluster2 = new Cluster(coinsCluster2);
+			var cluster2 = new Cluster(coinsCluster2.Select(x => x.HdPubKey));
 			foreach (var coin in coinsCluster2)
 			{
-				coin.Cluster = cluster2;
+				coin.HdPubKey.Cluster = cluster2;
 			}
 
 			var coinsView = new CoinsView(scoins.ToArray());
-			var transactionStore = new AllTransactionStoreMock(workFolderPath: ".", Network.Main);
-			var transactionFactory = new TransactionFactory(Network.Main, keyManager, coinsView, transactionStore, password);
+			var mockTransactionStore = new Mock<AllTransactionStore>(".", Network.Main);
+			var transactionFactory = new TransactionFactory(Network.Main, keyManager, coinsView, mockTransactionStore.Object, password);
 
 			// Two 0.9btc coins are enough
-			var payment = new PaymentIntent(new Key().ScriptPubKey, Money.Coins(1.75m), label: "Sophie");
+			using Key key1 = new();
+			var payment = new PaymentIntent(key1.ScriptPubKey, Money.Coins(1.75m), label: "Sophie");
 			var feeRate = new FeeRate(2m);
 			var result = transactionFactory.BuildTransaction(payment, feeRate);
 
 			Assert.Equal(2, result.SpentCoins.Count());
-			Assert.All(result.SpentCoins, c => Assert.Equal(c.Cluster, cluster2));
+			Assert.All(result.SpentCoins, c => Assert.Equal(c.HdPubKey.Cluster, cluster2));
 			Assert.Contains(coinsByLabel["Julio"], result.SpentCoins);
 			Assert.Contains(coinsByLabel["Donald, Jean, Lee, Onur"], result.SpentCoins);
 
 			// Three 0.9btc coins are enough
-			payment = new PaymentIntent(new Key().ScriptPubKey, Money.Coins(1.85m), label: "Sophie");
+			using Key key2 = new();
+			payment = new PaymentIntent(key2.ScriptPubKey, Money.Coins(1.85m), label: "Sophie");
 			feeRate = new FeeRate(2m);
 			result = transactionFactory.BuildTransaction(payment, feeRate);
 
 			Assert.Equal(3, result.SpentCoins.Count());
-			Assert.All(result.SpentCoins, c => Assert.Equal(c.Cluster, cluster2));
+			Assert.All(result.SpentCoins, c => Assert.Equal(c.HdPubKey.Cluster, cluster2));
 			Assert.Contains(coinsByLabel["Julio"], result.SpentCoins);
 			Assert.Contains(coinsByLabel["Donald, Jean, Lee, Onur"], result.SpentCoins);
 			Assert.Contains(coinsByLabel["Satoshi"], result.SpentCoins);
 
 			// Four 0.9btc coins are enough but this time the more private cluster is NOT enough
 			// That's why it has to use the coins in the cluster number 1
-			payment = new PaymentIntent(new Key().ScriptPubKey, Money.Coins(3.5m), label: "Sophie");
+			using Key key3 = new();
+			payment = new PaymentIntent(key3.ScriptPubKey, Money.Coins(3.5m), label: "Sophie");
 			feeRate = new FeeRate(2m);
 			result = transactionFactory.BuildTransaction(payment, feeRate);
 
 			Assert.Equal(4, result.SpentCoins.Count());
-			Assert.All(result.SpentCoins, c => Assert.Equal(c.Cluster, cluster1));
+			Assert.All(result.SpentCoins, c => Assert.Equal(c.HdPubKey.Cluster, cluster1));
 			Assert.Contains(coinsByLabel["Pablo"], result.SpentCoins);
 			Assert.Contains(coinsByLabel["Daniel"], result.SpentCoins);
 			Assert.Contains(coinsByLabel["Adolf"], result.SpentCoins);
@@ -251,7 +261,8 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 
 			// Nine 0.9btc coins are enough but there is no cluster big enough
 			// That's why it has to use the coins from both the clusters
-			payment = new PaymentIntent(new Key().ScriptPubKey, Money.Coins(7.4m), label: "Sophie");
+			using Key key = new();
+			payment = new PaymentIntent(key.ScriptPubKey, Money.Coins(7.4m), label: "Sophie");
 			feeRate = new FeeRate(2m);
 			result = transactionFactory.BuildTransaction(payment, feeRate);
 
@@ -261,17 +272,18 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 		[Fact]
 		public void CustomChangeScript()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("Maria", 0, 1m, confirmed: true, anonymitySet: 100)
 			});
 
-			var destination = new Key().ScriptPubKey;
-			var changeDestination = new Key().ScriptPubKey;
+			using Key key = new();
+			using Key changeKey = new();
+
 			var payment = new PaymentIntent(new[]
 			{
-				new DestinationRequest(destination, Money.Coins(0.1m)),
-				new DestinationRequest(changeDestination, MoneyRequest.CreateChange(subtractFee: true))
+				new DestinationRequest(key.ScriptPubKey, Money.Coins(0.1m)),
+				new DestinationRequest(changeKey.ScriptPubKey, MoneyRequest.CreateChange(subtractFee: true))
 			});
 			var feeRate = new FeeRate(2m);
 			var result = transactionFactory.BuildTransaction(payment, feeRate);
@@ -281,29 +293,30 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			Assert.Equal(Money.Coins(1m), result.SpentCoins.Select(x => x.Amount).Sum());
 
 			var tx = result.Transaction.Transaction;
-			Assert.Equal(2, tx.Outputs.Count());
+			Assert.Equal(2, tx.Outputs.Count);
 
-			var changeOutput = Assert.Single(tx.Outputs, x => x.ScriptPubKey == changeDestination);
-			Assert.Null(transactionFactory.KeyManager.GetKeyForScriptPubKey(changeOutput.ScriptPubKey));
+			var changeOutput = Assert.Single<TxOut>(tx.Outputs, x => x.ScriptPubKey == changeKey.ScriptPubKey);
+			Assert.False(transactionFactory.KeyManager.TryGetKeyForScriptPubKey(changeOutput.ScriptPubKey, out _));
 			Assert.Equal(Money.Coins(0.9m), changeOutput.Value + result.Fee);
 		}
 
 		[Fact]
 		public void SubtractFeeFromSpecificOutput()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("Maria", 0, 1m, confirmed: true, anonymitySet: 100)
 			});
 
-			var destination1 = new Key().ScriptPubKey;
-			var destination2 = new Key().ScriptPubKey;
-			var destination3 = new Key().ScriptPubKey;
+			using Key key1 = new();
+			using Key key2 = new();
+			using Key key3 = new();
+
 			var payment = new PaymentIntent(new[]
 			{
-				new DestinationRequest(destination1, Money.Coins(0.3m)),
-				new DestinationRequest(destination2, Money.Coins(0.3m), subtractFee: true),
-				new DestinationRequest(destination3, Money.Coins(0.3m))
+				new DestinationRequest(key1.ScriptPubKey, Money.Coins(0.3m)),
+				new DestinationRequest(key2.ScriptPubKey, Money.Coins(0.3m), subtractFee: true),
+				new DestinationRequest(key3.ScriptPubKey, Money.Coins(0.3m))
 			});
 			var feeRate = new FeeRate(2m);
 			var result = transactionFactory.BuildTransaction(payment, feeRate);
@@ -313,31 +326,32 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			Assert.Equal(Money.Coins(1m), spentCoin.Amount);
 
 			var tx = result.Transaction.Transaction;
-			Assert.Equal(4, tx.Outputs.Count());
+			Assert.Equal(4, tx.Outputs.Count);
 
-			var destination2Output = Assert.Single(tx.Outputs, x => x.ScriptPubKey == destination2);
+			var destination2Output = Assert.Single<TxOut>(tx.Outputs, x => x.ScriptPubKey == key2.ScriptPubKey);
 			Assert.Equal(Money.Coins(0.3m), destination2Output.Value + result.Fee);
 
-			var changeOutput = Assert.Single(tx.Outputs, x => transactionFactory.KeyManager.GetKeyForScriptPubKey(x.ScriptPubKey) is { });
+			var changeOutput = Assert.Single(tx.Outputs, x => transactionFactory.KeyManager.TryGetKeyForScriptPubKey(x.ScriptPubKey, out _));
 			Assert.Equal(Money.Coins(0.1m), changeOutput.Value);
 		}
 
 		[Fact]
 		public void SubtractFeeFromTooSmallOutput()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("Maria", 0, 1m, confirmed: true, anonymitySet: 100)
 			});
 
-			var destination1 = new Key().ScriptPubKey;
-			var destination2 = new Key().ScriptPubKey;
-			var destination3 = new Key().ScriptPubKey;
+			using Key key1 = new();
+			using Key key2 = new();
+			using Key key3 = new();
+
 			var payment = new PaymentIntent(new[]
 			{
-				new DestinationRequest(destination1, Money.Coins(0.3m)),
-				new DestinationRequest(destination2, Money.Coins(0.00001m), subtractFee: true),
-				new DestinationRequest(destination3, Money.Coins(0.3m))
+				new DestinationRequest(key1.ScriptPubKey, Money.Coins(0.3m)),
+				new DestinationRequest(key2.ScriptPubKey, Money.Coins(0.00001m), subtractFee: true),
+				new DestinationRequest(key3.ScriptPubKey, Money.Coins(0.3m))
 			});
 			var feeRate = new FeeRate(20m);
 			var ex = Assert.Throws<NotEnoughFundsException>(() => transactionFactory.BuildTransaction(payment, feeRate));
@@ -348,12 +362,13 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 		[Fact]
 		public void MultiplePaymentsToSameAddress()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("Maria", 0, 1m, confirmed: true, anonymitySet: 100)
 			});
 
-			var destination = new Key().ScriptPubKey;
+			using Key key = new();
+			var destination = key.ScriptPubKey;
 			var payment = new PaymentIntent(new[]
 			{
 				new DestinationRequest(destination, Money.Coins(0.3m)),
@@ -368,7 +383,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			Assert.Equal(Money.Coins(1m), spentCoin.Amount);
 
 			var tx = result.Transaction.Transaction;
-			Assert.Equal(2, tx.Outputs.Count()); // consolidates same address payment
+			Assert.Equal(2, tx.Outputs.Count); // consolidates same address payment
 
 			var destinationOutput = Assert.Single(result.OuterWalletOutputs);
 			Assert.Equal(destination, destinationOutput.ScriptPubKey);
@@ -381,7 +396,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 		[Fact]
 		public void SendAbsolutelyAllCoins()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("Maria",  0, 0.5m, confirmed: false, anonymitySet: 1),
 				("Joseph", 1, 0.4m, confirmed: true, anonymitySet: 10),
@@ -389,7 +404,8 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 				("Julio",  3, 0.2m, confirmed: true, anonymitySet: 100)
 			});
 
-			var destination = new Key().ScriptPubKey;
+			using Key key = new();
+			var destination = key.ScriptPubKey;
 			var payment = new PaymentIntent(new[]
 			{
 				new DestinationRequest(destination, MoneyRequest.CreateAllRemaining(subtractFee: true))
@@ -407,7 +423,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 		[Fact]
 		public void SpendOnlyAllowedCoins()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("Pablo",  0, 0.01m, confirmed: false, anonymitySet: 50),
 				("Daniel", 1, 0.02m, confirmed: false, anonymitySet: 1),
@@ -415,14 +431,14 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 				("Maria",  3, 0.08m, confirmed: true, anonymitySet: 100)
 			});
 
-			var destination = new Key().ScriptPubKey;
-			var payment = new PaymentIntent(new Key().ScriptPubKey, Money.Coins(0.095m));
+			using Key key = new();
+			var payment = new PaymentIntent(key.ScriptPubKey, Money.Coins(0.095m));
 			var feeRate = new FeeRate(2m);
 			var coins = transactionFactory.Coins;
 			var allowedCoins = new[]
 			{
-				coins.Single(x => x.Label == "Maria"),
-				coins.Single(x => x.Label == "Suyin")
+				coins.Single(x => x.HdPubKey.Label == "Maria"),
+				coins.Single(x => x.HdPubKey.Label == "Suyin")
 			}.ToArray();
 			var result = transactionFactory.BuildTransaction(payment, feeRate, allowedCoins.Select(x => x.OutPoint));
 
@@ -436,7 +452,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 		[Fact]
 		public void SpendWholeAllowedCoins()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("Pablo",  0, 0.01m, confirmed: false, anonymitySet: 50),
 				("Daniel", 1, 0.02m, confirmed: false, anonymitySet: 1),
@@ -444,15 +460,16 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 				("Maria",  3, 0.08m, confirmed: true, anonymitySet: 100)
 			});
 
-			var destination = new Key().ScriptPubKey;
+			using Key key = new();
+			var destination = key.ScriptPubKey;
 			var payment = new PaymentIntent(destination, MoneyRequest.CreateAllRemaining(subtractFee: true));
 			var feeRate = new FeeRate(2m);
 			var coins = transactionFactory.Coins;
 			var allowedCoins = new[]
 			{
-				coins.Single(x => x.Label == "Pablo"),
-				coins.Single(x => x.Label == "Maria"),
-				coins.Single(x => x.Label == "Suyin")
+				coins.Single(x => x.HdPubKey.Label == "Pablo"),
+				coins.Single(x => x.HdPubKey.Label == "Maria"),
+				coins.Single(x => x.HdPubKey.Label == "Suyin")
 			}.ToArray();
 			var result = transactionFactory.BuildTransaction(payment, feeRate, allowedCoins.Select(x => x.OutPoint));
 
@@ -472,7 +489,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 		[Fact]
 		public void InsufficientAllowedCoins()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("Pablo", 0, 0.01m, confirmed: true, anonymitySet: 1),
 				("Jean",  1, 0.08m, confirmed: true, anonymitySet: 1)
@@ -480,11 +497,12 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 
 			var allowedCoins = new[]
 			{
-				transactionFactory.Coins.Single(x => x.Label == "Pablo")
+				transactionFactory.Coins.Single(x => x.HdPubKey.Label == "Pablo")
 			}.ToArray();
 
 			var amount = Money.Coins(0.5m); // it is not enough
-			var payment = new PaymentIntent(new Key().ScriptPubKey, amount);
+			using Key key = new();
+			var payment = new PaymentIntent(key.ScriptPubKey, amount);
 
 			var ex = Assert.Throws<InsufficientBalanceException>(() =>
 				transactionFactory.BuildTransaction(payment, new FeeRate(2m), allowedCoins.Select(x => x.OutPoint)));
@@ -496,7 +514,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 		[Fact]
 		public void SpendWholeCoinsEvenWhenNotAllowed()
 		{
-			var transactionFactory = CreateTransactionFactory(new[]
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(new[]
 			{
 				("Pablo",  0, 0.01m, confirmed: false, anonymitySet: 50),
 				("Daniel", 1, 0.02m, confirmed: false, anonymitySet: 1),
@@ -505,8 +523,8 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			});
 
 			// Selecting 0.08 + 0.02 should be enough but it has to select 0.02 too because it is the same address
-			var destination = new Key().ScriptPubKey;
-			var payment = new PaymentIntent(new Key().ScriptPubKey, Money.Coins(0.095m));
+			using Key key = new();
+			var payment = new PaymentIntent(key.ScriptPubKey, Money.Coins(0.095m));
 			var feeRate = new FeeRate(2m);
 			var coins = transactionFactory.Coins;
 
@@ -522,7 +540,7 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 			Assert.True(result.Signed);
 			Assert.Equal(Money.Coins(0.14m), result.SpentCoins.Select(x => x.Amount).Sum());
 			Assert.Equal(3, result.SpentCoins.Count());
-			var danielCoin = coins.Where(x => x.Label == "Daniel").ToArray();
+			var danielCoin = coins.Where(x => x.HdPubKey.Label == "Daniel").ToArray();
 			Assert.Contains(danielCoin[0], result.SpentCoins);
 			Assert.Contains(danielCoin[1], result.SpentCoins);
 		}
@@ -530,14 +548,15 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 		[Fact]
 		public void DoNotSignWatchOnly()
 		{
-			var transactionFactory = CreateTransactionFactory(
+			var transactionFactory = ServiceFactory.CreateTransactionFactory(
 				new[]
 				{
 					("Pablo", 0, 1m, confirmed: true, anonymitySet: 1)
 				},
 				watchOnly: true);
 
-			var payment = new PaymentIntent(new Key().ScriptPubKey, MoneyRequest.CreateAllRemaining(subtractFee: true));
+			using Key key = new();
+			var payment = new PaymentIntent(key.ScriptPubKey, MoneyRequest.CreateAllRemaining(subtractFee: true));
 
 			var result = transactionFactory.BuildTransaction(payment, new FeeRate(44.25m));
 			Assert.Single(result.OuterWalletOutputs);
@@ -569,55 +588,6 @@ namespace WalletWasabi.Tests.UnitTests.Transactions
 
 			var rest = dict.Where(x => x.Key < 0).Select(x => x.Value);
 			Assert.DoesNotContain(rest, x => x > samplingSize * 0.001);
-		}
-
-		private static (string, KeyManager) DefaultKeyManager()
-		{
-			var password = "blahblahblah";
-			return (password, KeyManager.CreateNew(out var _, password));
-		}
-
-		private static (string, KeyManager) WatchOnlyKeyManager()
-		{
-			var (password, keyManager) = DefaultKeyManager();
-			return (password, KeyManager.CreateNewWatchOnly(keyManager.ExtPubKey));
-		}
-
-		private static SmartCoin Coin(string label, HdPubKey pubKey, decimal amount, bool confirmed = true, int anonymitySet = 1)
-		{
-			var randomIndex = new Func<int>(() => new Random().Next(0, 200));
-			var height = confirmed ? new Height(randomIndex()) : Height.Mempool;
-			SmartLabel slabel = label;
-			var spentOutput = new[]
-			{
-				new OutPoint(RandomUtils.GetUInt256(), (uint)randomIndex())
-			};
-			pubKey.SetLabel(slabel);
-			pubKey.SetKeyState(KeyState.Used);
-			return new SmartCoin(RandomUtils.GetUInt256(), (uint)randomIndex(), pubKey.P2wpkhScript, Money.Coins(amount), spentOutput, height, false, anonymitySet, slabel, pubKey: pubKey);
-		}
-
-		private TransactionFactory CreateTransactionFactory(
-			IEnumerable<(string Label, int KeyIndex, decimal Amount, bool Confirmed, int AnonymitySet)> coins,
-			bool allowUnconfirmed = true,
-			bool watchOnly = false)
-		{
-			var (password, keyManager) = watchOnly ? WatchOnlyKeyManager() : DefaultKeyManager();
-
-			keyManager.AssertCleanKeysIndexed();
-
-			var keys = keyManager.GetKeys().Take(10).ToArray();
-			var scoins = coins.Select(x => Coin(x.Label, keys[x.KeyIndex], x.Amount, x.Confirmed, x.AnonymitySet)).ToArray();
-			foreach (var coin in scoins)
-			{
-				foreach (var sameLabelCoin in scoins.Where(c => !c.Label.IsEmpty && c.Label == coin.Label))
-				{
-					sameLabelCoin.Cluster = coin.Cluster;
-				}
-			}
-			var coinsView = new CoinsView(scoins);
-			var transactionStore = new AllTransactionStoreMock(workFolderPath: ".", Network.Main);
-			return new TransactionFactory(Network.Main, keyManager, coinsView, transactionStore, password, allowUnconfirmed);
 		}
 	}
 }

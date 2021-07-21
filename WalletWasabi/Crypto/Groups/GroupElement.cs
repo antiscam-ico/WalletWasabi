@@ -22,7 +22,7 @@ namespace WalletWasabi.Crypto.Groups
 		}
 
 		// Since GEJ.IsValidVariable, this constructor is private
-		private GroupElement(GEJ groupElementJacobian)
+		internal GroupElement(GEJ groupElementJacobian)
 		{
 			if (groupElementJacobian.IsInfinity)
 			{
@@ -45,7 +45,7 @@ namespace WalletWasabi.Crypto.Groups
 
 		private GEJ Gej { get; }
 		private Lazy<GE> LazyGe { get; }
-		private GE Ge => LazyGe.Value;
+		internal GE Ge => LazyGe.Value;
 		private bool IsGeCreated => LazyGe.IsValueCreated;
 
 		public bool IsInfinity => Gej.IsInfinity;
@@ -91,7 +91,7 @@ namespace WalletWasabi.Crypto.Groups
 			{
 				return "Infinity";
 			}
-			else if (Generators.TryGetFriendlyGeneratorName(this, out string generatorName))
+			else if (Generators.TryGetFriendlyGeneratorName(this, out var generatorName))
 			{
 				return $"{generatorName}, {Ge.x.ToC("x")}{Ge.y.ToC("y")}";
 			}
@@ -173,8 +173,8 @@ namespace WalletWasabi.Crypto.Groups
 			return bytes[0] switch
 			{
 				0 => Infinity,
-				GE.SECP256K1_TAG_PUBKEY_ODD => Parse(bytes[1..], isOdd: true),
-				GE.SECP256K1_TAG_PUBKEY_EVEN => Parse(bytes[1..], isOdd: false),
+				GE.SECP256K1_TAG_PUBKEY_ODD => Parse(bytes.AsSpan()[1..], isOdd: true),
+				GE.SECP256K1_TAG_PUBKEY_EVEN => Parse(bytes.AsSpan()[1..], isOdd: false),
 				_ => throw new ArgumentException($"Argument is not a well-formatted group element.", nameof(bytes))
 			};
 		}

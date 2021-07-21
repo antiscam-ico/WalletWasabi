@@ -13,17 +13,6 @@ namespace WalletWasabi.Helpers
 {
 	public static class NBitcoinHelpers
 	{
-		public static string HashOutpoints(IEnumerable<OutPoint> outPoints)
-		{
-			var sb = new StringBuilder();
-			foreach (OutPoint input in outPoints.OrderBy(x => x.Hash.ToString()).ThenBy(x => x.N))
-			{
-				sb.Append(ByteHelpers.ToHex(input.ToBytes()));
-			}
-
-			return HashHelpers.GenerateSha256Hash(sb.ToString());
-		}
-
 		/// <exception cref="InvalidOperationException">If valid output value cannot be created with the given parameters.</exception>
 		/// <returns>Sum of outputs' values. Sum of inputs' values - the calculated fee.</returns>
 		public static Money TakeFee(IEnumerable<Coin> inputs, int outputCount, Money feePerInputs, Money feePerOutputs)
@@ -126,15 +115,15 @@ namespace WalletWasabi.Helpers
 			return k;
 		}
 
-		public static async Task<AddressManager> LoadAddressManagerFromPeerFileAsync(string filePath, Network expectedNetwork = null)
+		public static async Task<AddressManager> LoadAddressManagerFromPeerFileAsync(string filePath, Network? expectedNetwork = null)
 		{
 			byte[] data, hash;
 			using (var fs = File.Open(filePath, FileMode.Open, FileAccess.Read))
 			{
 				data = new byte[fs.Length - 32];
-				await fs.ReadAsync(data, 0, data.Length);
+				await fs.ReadAsync(data.AsMemory(0, data.Length)).ConfigureAwait(false);
 				hash = new byte[32];
-				await fs.ReadAsync(hash, 0, 32);
+				await fs.ReadAsync(hash.AsMemory(0, 32)).ConfigureAwait(false);
 			}
 			var actual = Hashes.DoubleSHA256(data);
 			var expected = new uint256(hash);
@@ -143,7 +132,7 @@ namespace WalletWasabi.Helpers
 				throw new FormatException("Invalid address manager file");
 			}
 
-			BitcoinStream stream = new BitcoinStream(data) { Type = SerializationType.Disk };
+			BitcoinStream stream = new(data) { Type = SerializationType.Disk };
 			uint magic = 0;
 			stream.ReadWrite(ref magic);
 			if (expectedNetwork is { } && expectedNetwork.Magic != magic)

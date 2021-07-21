@@ -8,6 +8,7 @@ using WalletWasabi.Bases;
 using WalletWasabi.Exceptions;
 using WalletWasabi.Helpers;
 using WalletWasabi.JsonConverters;
+using WalletWasabi.JsonConverters.Bitcoin;
 using WalletWasabi.Logging;
 using WalletWasabi.Models;
 using WalletWasabi.Tor;
@@ -21,7 +22,6 @@ namespace WalletWasabi.Gui
 		public const int DefaultPrivacyLevelSome = 2;
 		public const int DefaultPrivacyLevelFine = 21;
 		public const int DefaultPrivacyLevelStrong = 50;
-		public const int DefaultTorSock5Port = 9050;
 		public const int DefaultJsonRpcServerPort = 37128;
 		public static readonly Money DefaultDustThreshold = Money.Coins(Constants.DefaultDustThreshold);
 
@@ -84,10 +84,6 @@ namespace WalletWasabi.Gui
 
 		[JsonProperty(PropertyName = "LocalBitcoinCoreDataDir")]
 		public string LocalBitcoinCoreDataDir { get; internal set; } = EnvironmentHelpers.GetDefaultBitcoinCoreDataDirOrEmptyString();
-
-		[JsonProperty(PropertyName = "TorSocks5EndPoint")]
-		[JsonConverter(typeof(EndPointJsonConverter), Constants.DefaultTorSocksPort)]
-		public EndPoint TorSocks5EndPoint { get; internal set; } = new IPEndPoint(IPAddress.Loopback, Constants.DefaultTorSocksPort);
 
 		[JsonProperty(PropertyName = "MainNetBitcoinP2pEndPoint")]
 		[JsonConverter(typeof(EndPointJsonConverter), Constants.DefaultMainNetBitcoinP2pPort)]
@@ -278,18 +274,7 @@ namespace WalletWasabi.Gui
 			}
 		}
 
-		/// <inheritdoc />
-		public override void LoadFile()
-		{
-			base.LoadFile();
-
-			ServiceConfiguration = new ServiceConfiguration(MixUntilAnonymitySet, PrivacyLevelSome, PrivacyLevelFine, PrivacyLevelStrong, GetBitcoinP2pEndPoint(), DustThreshold);
-
-			// Just debug convenience.
-			_backendUri = GetCurrentBackendUri();
-		}
-
-		public void SetP2PEndpoint(EndPoint endPoint)
+		public void SetBitcoinP2pEndpoint(EndPoint endPoint)
 		{
 			if (Network == Network.Main)
 			{
@@ -309,24 +294,15 @@ namespace WalletWasabi.Gui
 			}
 		}
 
-		public EndPoint GetP2PEndpoint()
+		/// <inheritdoc />
+		public override void LoadFile()
 		{
-			if (Network == Network.Main)
-			{
-				return MainNetBitcoinP2pEndPoint;
-			}
-			else if (Network == Network.TestNet)
-			{
-				return TestNetBitcoinP2pEndPoint;
-			}
-			else if (Network == Network.RegTest)
-			{
-				return RegTestBitcoinP2pEndPoint;
-			}
-			else
-			{
-				throw new NotSupportedNetworkException(Network);
-			}
+			base.LoadFile();
+
+			ServiceConfiguration = new ServiceConfiguration(MixUntilAnonymitySet, PrivacyLevelSome, PrivacyLevelFine, PrivacyLevelStrong, GetBitcoinP2pEndPoint(), DustThreshold);
+
+			// Just debug convenience.
+			_backendUri = GetCurrentBackendUri();
 		}
 
 		private int CorrectMixUntilAnonymitySetValue()
@@ -404,22 +380,11 @@ namespace WalletWasabi.Gui
 				var regTestBitcoinCoreHost = jsObject.Value<string>("RegTestBitcoinCoreHost");
 				var regTestBitcoinCorePort = jsObject.Value<int?>("RegTestBitcoinCorePort");
 
-				if (torHost is { })
-				{
-					int port = torSocks5Port ?? Constants.DefaultTorSocksPort;
-
-					if (EndPointParser.TryParse(torHost, port, out EndPoint ep))
-					{
-						TorSocks5EndPoint = ep;
-						saveIt = true;
-					}
-				}
-
 				if (mainNetBitcoinCoreHost is { })
 				{
 					int port = mainNetBitcoinCorePort ?? Constants.DefaultMainNetBitcoinP2pPort;
 
-					if (EndPointParser.TryParse(mainNetBitcoinCoreHost, port, out EndPoint ep))
+					if (EndPointParser.TryParse(mainNetBitcoinCoreHost, port, out EndPoint? ep))
 					{
 						MainNetBitcoinP2pEndPoint = ep;
 						saveIt = true;
@@ -430,7 +395,7 @@ namespace WalletWasabi.Gui
 				{
 					int port = testNetBitcoinCorePort ?? Constants.DefaultTestNetBitcoinP2pPort;
 
-					if (EndPointParser.TryParse(testNetBitcoinCoreHost, port, out EndPoint ep))
+					if (EndPointParser.TryParse(testNetBitcoinCoreHost, port, out EndPoint? ep))
 					{
 						TestNetBitcoinP2pEndPoint = ep;
 						saveIt = true;
@@ -441,7 +406,7 @@ namespace WalletWasabi.Gui
 				{
 					int port = regTestBitcoinCorePort ?? Constants.DefaultRegTestBitcoinP2pPort;
 
-					if (EndPointParser.TryParse(regTestBitcoinCoreHost, port, out EndPoint ep))
+					if (EndPointParser.TryParse(regTestBitcoinCoreHost, port, out EndPoint? ep))
 					{
 						RegTestBitcoinP2pEndPoint = ep;
 						saveIt = true;

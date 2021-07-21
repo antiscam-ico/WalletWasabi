@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Runtime.InteropServices;
@@ -10,22 +11,20 @@ namespace WalletWasabi.Tor
 	/// </summary>
 	public class TorSettings
 	{
-		/// <summary>
-		/// Creates a new instance.
-		/// </summary>
 		/// <param name="dataDir">Application data directory.</param>
-		/// <param name="logFilePath">Full Tor log file path.</param>
 		/// <param name="distributionFolderPath">Full path to folder containing Tor installation files.</param>
-		public TorSettings(string dataDir, string logFilePath, string distributionFolderPath)
+		public TorSettings(string dataDir, string distributionFolderPath, bool terminateOnExit, int? owningProcessId = null)
 		{
-			var torBinary = MicroserviceHelpers.GetBinaryPath(Path.Combine("Tor", "tor"));
-			TorBinaryFilePath = RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? $"{torBinary}.real" : torBinary;
+			TorBinaryFilePath = GetTorBinaryFilePath();
 			TorBinaryDir = Path.Combine(MicroserviceHelpers.GetBinaryFolder(), "Tor");
 
-			TorDataDir = Path.Combine(dataDir, "tordata");
-			LogFilePath = logFilePath;
+			TorDataDir = Path.Combine(dataDir, "tordata2");
+			CookieAuthFilePath = Path.Combine(dataDir, "control_auth_cookie");
+			LogFilePath = Path.Combine(dataDir, "TorLogs.txt");
+			IoHelpers.EnsureContainingDirectoryExists(LogFilePath);
 			DistributionFolder = distributionFolderPath;
-
+			TerminateOnExit = terminateOnExit;
+			OwningProcessId = owningProcessId;
 			GeoIpPath = Path.Combine(DistributionFolder, "Tor", "Geoip", "geoip");
 			GeoIp6Path = Path.Combine(DistributionFolder, "Tor", "Geoip", "geoip6");
 		}
@@ -42,21 +41,56 @@ namespace WalletWasabi.Tor
 		/// <summary>Full Tor distribution folder where Tor installation files are located.</summary>
 		public string DistributionFolder { get; }
 
+		/// <summary>Whether Tor should be terminated when Wasabi Wallet terminates.</summary>
+		public bool TerminateOnExit { get; }
+
+		/// <summary>Owning process ID for Tor program.</summary>
+		public int? OwningProcessId { get; }
+
 		/// <summary>Full path to executable file that is used to start Tor process.</summary>
 		public string TorBinaryFilePath { get; }
+
+		/// <summary>Full path to Tor cookie file.</summary>
+		public string CookieAuthFilePath { get; }
+
+		/// <summary>Tor control endpoint.</summary>
+		public IPEndPoint SocksEndpoint { get; } = new(IPAddress.Loopback, 37150);
+
+		/// <summary>Tor control endpoint.</summary>
+		public IPEndPoint ControlEndpoint { get; } = new(IPAddress.Loopback, 37151);
 
 		private string GeoIpPath { get; }
 		private string GeoIp6Path { get; }
 
-		public string GetCmdArguments(EndPoint torSocks5EndPoint)
+		/// <returns>Full path to Tor binary for selected <paramref name="platform"/>.</returns>
+		public static string GetTorBinaryFilePath(OSPlatform? platform = null)
 		{
-			return string.Join(
-				" ",
-				$"--SOCKSPort {torSocks5EndPoint}",
+			platform ??= MicroserviceHelpers.GetCurrentPlatform();
+
+			string binaryPath = MicroserviceHelpers.GetBinaryPath(Path.Combine("Tor", "tor"), platform);
+			return platform == OSPlatform.OSX ? $"{binaryPath}.real" : binaryPath;
+		}
+
+		public string GetCmdArguments()
+		{
+			List<string> arguments = new()
+			{
+				$"--SOCKSPort {SocksEndpoint}",
+				$"--CookieAuthentication 1",
+				$"--ControlPort {ControlEndpoint.Port}",
+				$"--CookieAuthFile \"{CookieAuthFilePath}\"",
 				$"--DataDirectory \"{TorDataDir}\"",
 				$"--GeoIPFile \"{GeoIpPath}\"",
 				$"--GeoIPv6File \"{GeoIp6Path}\"",
-				$"--Log \"notice file {LogFilePath}\"");
+				$"--Log \"notice file {LogFilePath}\""
+			};
+
+			if (TerminateOnExit && OwningProcessId is not null)
+			{
+				arguments.Add($"__OwningControllerProcess {OwningProcessId}");
+			}
+
+			return string.Join(" ", arguments);
 		}
 	}
 }

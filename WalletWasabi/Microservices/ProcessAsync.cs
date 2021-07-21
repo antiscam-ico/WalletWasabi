@@ -11,7 +11,6 @@ namespace WalletWasabi.Microservices
 	/// Async wrapper class for <see cref="System.Diagnostics.Process"/> class that implements <see cref="WaitForExitAsync(CancellationToken, bool)"/>
 	/// to asynchronously wait for a process to exit.
 	/// </summary>
-	/// <remarks><see cref="IDisposable"/> is implemented. Do not forget to use `using` or dispose any instance of this class.</remarks>
 	public class ProcessAsync : IDisposable
 	{
 		/// <summary>
@@ -23,16 +22,10 @@ namespace WalletWasabi.Microservices
 		{
 		}
 
-		private ProcessAsync(Process process)
+		internal ProcessAsync(Process process)
 		{
-			ProcessExecutionTcs = new TaskCompletionSource<bool>();
-
 			Process = process;
-			Process.EnableRaisingEvents = true;
-			Process.Exited += OnExited;
 		}
-
-		private TaskCompletionSource<bool> ProcessExecutionTcs { get; }
 
 		private Process Process { get; }
 
@@ -81,41 +74,38 @@ namespace WalletWasabi.Microservices
 			Process.Kill();
 		}
 
-		/// <inheritdoc cref="Process.Kill(bool)"/>
-		public void Kill(bool entireProcessTree)
-		{
-			Process.Kill(entireProcessTree);
-		}
-
 		/// <summary>
 		/// Waits until the process either finishes on its own or when user cancels the action.
 		/// </summary>
-		/// <param name="cancel">Cancellation token.</param>
-		/// <param name="killOnCancel">If <c>true</c> the process will be killed (with entire process tree) when this asynchronous action is canceled via <paramref name="cancel"/> token.</param>
+		/// <param name="cancellationToken">Cancellation token.</param>
+		/// <param name="killOnCancel">If <c>true</c> the process will be killed (with entire process tree) when this asynchronous action is canceled via <paramref name="cancellationToken"/> token.</param>
 		/// <returns><see cref="Task"/>.</returns>
-		public async Task WaitForExitAsync(CancellationToken cancel, bool killOnCancel = false)
+		public virtual async Task WaitForExitAsync(CancellationToken cancellationToken, bool killOnCancel = false)
 		{
 			if (Process.HasExited)
 			{
+				Logger.LogTrace("Process has already exited.");
 				return;
 			}
 
 			try
 			{
-				// If this token is already in the canceled state, the delegate will be run immediately and synchronously.
-				using (cancel.Register(() => ProcessExecutionTcs.TrySetCanceled()))
-				{
-					await ProcessExecutionTcs.Task;
-				}
+				Logger.LogTrace($"Wait for the process to exit: '{Process.Id}'");
+				await Process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+
+				Logger.LogTrace("Process has exited.");
 			}
 			catch (OperationCanceledException ex)
 			{
+				Logger.LogTrace("User canceled waiting for process exit.");
+
 				if (killOnCancel)
 				{
 					if (!Process.HasExited)
 					{
 						try
 						{
+							Logger.LogTrace("Kill process.");
 							Process.Kill(entireProcessTree: true);
 						}
 						catch (Exception e)
@@ -125,7 +115,7 @@ namespace WalletWasabi.Microservices
 					}
 				}
 
-				throw new TaskCanceledException("Waiting for process exiting was canceled.", ex, cancel);
+				throw new TaskCanceledException("Waiting for process exiting was canceled.", ex, cancellationToken);
 			}
 		}
 
@@ -140,25 +130,19 @@ namespace WalletWasabi.Microservices
 			if (disposing)
 			{
 				// Dispose managed state (managed objects).
-				Process.Exited -= OnExited;
 				Process.Dispose();
 			}
 
 			_disposed = true;
 		}
 
-		public void Dispose()
+		public virtual void Dispose()
 		{
 			// Dispose of unmanaged resources.
 			Dispose(true);
 
 			// Suppress finalization.
 			GC.SuppressFinalize(this);
-		}
-
-		private void OnExited(object? sender, EventArgs? e)
-		{
-			ProcessExecutionTcs.TrySetResult(true);
 		}
 	}
 }

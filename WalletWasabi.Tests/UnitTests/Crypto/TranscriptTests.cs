@@ -1,3 +1,4 @@
+using Moq;
 using NBitcoin.Secp256k1;
 using System;
 using System.Linq;
@@ -53,7 +54,7 @@ namespace WalletWasabi.Tests.UnitTests.Crypto
 		public void SyntheticNoncesTest()
 		{
 			var protocol = Encoding.UTF8.GetBytes("test TranscriptRng collisions");
-			var rnd = new SecureRandom();
+			using var rnd = new SecureRandom();
 
 			var commitment1 = new[] { Generators.Gx0 };
 			var commitment2 = new[] { Generators.Gx1 };
@@ -97,11 +98,8 @@ namespace WalletWasabi.Tests.UnitTests.Crypto
 
 			// if all synthetic nonce provider get the same randomness, nonce sequences
 			// with different witnesses or commitments should still diverge
-			var rnd = new MockRandom();
-			rnd.GetBytesResults.Add(new byte[32]);
-			rnd.GetBytesResults.Add(new byte[32]);
-			rnd.GetBytesResults.Add(new byte[32]);
-			rnd.GetBytesResults.Add(new byte[32]);
+			var mockRandom = new Mock<WasabiRandom>();
+			mockRandom.Setup(rnd => rnd.GetBytes(32)).Returns(new byte[32]);
 
 			var commitment1 = new[] { Generators.Gx0 };
 			var commitment2 = new[] { Generators.Gx1 };
@@ -118,12 +116,11 @@ namespace WalletWasabi.Tests.UnitTests.Crypto
 			transcript3.CommitPublicNonces(commitment2);
 			transcript4.CommitPublicNonces(commitment2);
 
+			var rnd = mockRandom.Object;
 			var secretNonceGenerator1 = transcript1.CreateSyntheticSecretNonceProvider(witness1, rnd);
 			var secretNonceGenerator2 = transcript2.CreateSyntheticSecretNonceProvider(witness1, rnd);
 			var secretNonceGenerator3 = transcript3.CreateSyntheticSecretNonceProvider(witness2, rnd);
 			var secretNonceGenerator4 = transcript4.CreateSyntheticSecretNonceProvider(witness2, rnd);
-
-			Assert.Empty(rnd.GetBytesResults);
 
 			var secretNonce1 = secretNonceGenerator1.GetScalar();
 			var secretNonce2 = secretNonceGenerator2.GetScalar();
@@ -151,7 +148,7 @@ namespace WalletWasabi.Tests.UnitTests.Crypto
 		{
 			var protocol = Encoding.UTF8.GetBytes("witness size");
 
-			var rnd = new SecureRandom();
+			using var rnd = new SecureRandom();
 
 			var witness = new Scalar[size];
 
@@ -160,7 +157,7 @@ namespace WalletWasabi.Tests.UnitTests.Crypto
 
 			var secretNonce = secretNonceProvider.GetScalarVector();
 
-			Assert.Equal(secretNonce.Count(), witness.Length);
+			Assert.Equal(secretNonce.Count, witness.Length);
 		}
 
 		[Fact]
@@ -168,11 +165,11 @@ namespace WalletWasabi.Tests.UnitTests.Crypto
 		{
 			var protocol = Encoding.UTF8.GetBytes("empty witness not allowed");
 
-			var rnd = new SecureRandom();
+			using var rnd = new SecureRandom();
 
 			var transcript = new Transcript(protocol);
 
-			Assert.ThrowsAny<ArgumentException>(() => transcript.CreateSyntheticSecretNonceProvider(new Scalar[0], rnd));
+			Assert.ThrowsAny<ArgumentException>(() => transcript.CreateSyntheticSecretNonceProvider(Array.Empty<Scalar>(), rnd));
 		}
 	}
 }

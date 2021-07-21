@@ -19,7 +19,7 @@ namespace WalletWasabi.Helpers
 		public const uint ProtocolVersionWitnessVersion = 70012;
 
 		public const int P2wpkhInputSizeInBytes = 41;
-		public const int P2wpkhInputVirtualSize = 68;
+		public const int P2wpkhInputVirtualSize = 69;
 		public const int P2pkhInputSizeInBytes = 145;
 		public const int OutputSizeInBytes = 33;
 
@@ -29,13 +29,12 @@ namespace WalletWasabi.Helpers
 
 		public const decimal MaximumNumberOfBitcoins = 20999999.9769m;
 
+		public const int FastestConfirmationTarget = 1;
 		public const int TwentyMinutesConfirmationTarget = 2;
 		public const int OneDayConfirmationTarget = 144;
 		public const int SevenDaysConfirmationTarget = 1008;
 
 		public const int BigFileReadWriteBufferSize = 1 * 1024 * 1024;
-
-		public const int DefaultTorSocksPort = 9050;
 
 		public const int DefaultMainNetBitcoinP2pPort = 8333;
 		public const int DefaultTestNetBitcoinP2pPort = 18333;
@@ -45,28 +44,28 @@ namespace WalletWasabi.Helpers
 		public const int DefaultTestNetBitcoinCoreRpcPort = 18332;
 		public const int DefaultRegTestBitcoinCoreRpcPort = 18443;
 
-		public const double TransactionRBFSignalRate = 0.02; // 2% RBF transactions
-
 		public const decimal DefaultDustThreshold = 0.00005m;
 
 		public const string AlphaNumericCharacters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 		public const string CapitalAlphaNumericCharacters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
+		public const string ExecutableName = "wassabee";
+		public const string AppName = "Wasabi Wallet";
 		public const string BuiltinBitcoinNodeName = "Bitcoin Knots";
 
-		public static readonly Version ClientVersion = new Version(1, 1, 12, 2);
-		public static readonly Version HwiVersion = new Version("1.1.2");
-		public static readonly Version BitcoinCoreVersion = new Version("0.20.0");
-		public static readonly Version LegalDocumentsVersion = new Version(2, 0);
+		public static readonly Version ClientVersion = new(1, 1, 12, 9);
+		public static readonly Version HwiVersion = new("2.0.2");
+		public static readonly Version BitcoinCoreVersion = new("0.21.1");
+		public static readonly Version LegalDocumentsVersion = new(2, 0);
 
-		public static readonly NodeRequirement NodeRequirements = new NodeRequirement
+		public static readonly NodeRequirement NodeRequirements = new()
 		{
 			RequiredServices = NodeServices.NODE_WITNESS,
 			MinVersion = ProtocolVersionWitnessVersion,
 			MinProtocolCapabilities = new ProtocolCapabilities { SupportGetBlock = true, SupportWitness = true, SupportMempoolQuery = true }
 		};
 
-		public static readonly NodeRequirement LocalNodeRequirements = new NodeRequirement
+		public static readonly NodeRequirement LocalNodeRequirements = new()
 		{
 			RequiredServices = NodeServices.NODE_WITNESS,
 			MinVersion = ProtocolVersionWitnessVersion,
@@ -77,6 +76,8 @@ namespace WalletWasabi.Helpers
 
 		public static readonly string[] UserAgents = new[]
 		{
+			"/Satoshi:0.21.0/",
+			"/Satoshi:0.20.1/",
 			"/Satoshi:0.20.0/",
 			"/Satoshi:0.19.1/",
 			"/Satoshi:0.19.0.1/",
@@ -92,11 +93,18 @@ namespace WalletWasabi.Helpers
 			"/Satoshi:0.16.0/",
 		};
 
-		public static readonly int RangeProofWidth = (int)Math.Log2(MaximumNumberOfSatoshis);
-
-		public static Money MinimumCredentailAmount = Money.Satoshis(10_000);
-
-		public static Money MaximumCredentailAmount = Money.Satoshis(MaximumNumberOfSatoshis);
+		public static readonly int[] ConfirmationTargets = new[]
+		{
+			2, // Twenty Minutes
+			3, // Thirty Minutes
+			6, // One Hour
+			18, // Three Hours
+			36, // Six Hours
+			72, // Twelve Hours
+			144, // One Day
+			432, // Three Days
+			1008, // Seven Days
+		};
 
 		public static string ClientSupportBackendVersionText => ClientSupportBackendVersionMin == ClientSupportBackendVersionMax
 				? ClientSupportBackendVersionMin

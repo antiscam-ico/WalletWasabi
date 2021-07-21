@@ -47,26 +47,13 @@ namespace System.IO
 					// Directory does not exist. So the operation is trivially done.
 					return true;
 				}
-				catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+				catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 				{
 					await Task.Delay(millisecondsDelay).ConfigureAwait(false);
 				}
 			}
 
 			return false;
-		}
-
-		public static async Task BetterExtractZipToDirectoryAsync(string src, string dest)
-		{
-			try
-			{
-				ZipFile.ExtractToDirectory(src, dest);
-			}
-			catch (UnauthorizedAccessException)
-			{
-				await Task.Delay(100).ConfigureAwait(false);
-				ZipFile.ExtractToDirectory(src, dest);
-			}
 		}
 
 		public static void EnsureContainingDirectoryExists(string fileNameOrPath)
@@ -97,39 +84,11 @@ namespace System.IO
 			}
 		}
 
-		public static byte[] GetHashFile(string filePath)
-		{
-			var bytes = File.ReadAllBytes(filePath);
-			return HashHelpers.GenerateSha256Hash(bytes);
-		}
-
-		public static bool CheckExpectedHash(string filePath, string sourceFolderPath)
-		{
-			var fileHash = GetHashFile(filePath);
-			try
-			{
-				var digests = File.ReadAllLines(Path.Combine(sourceFolderPath, "digests.txt"));
-				foreach (var digest in digests)
-				{
-					var expectedHash = ByteHelpers.FromHex(digest);
-					if (ByteHelpers.CompareFastUnsafe(fileHash, expectedHash))
-					{
-						return true;
-					}
-				}
-				return false;
-			}
-			catch
-			{
-				return false;
-			}
-		}
-
 		public static void OpenFolderInFileExplorer(string dirPath)
 		{
 			if (Directory.Exists(dirPath))
 			{
-				using Process process = Process.Start(new ProcessStartInfo
+				using var process = Process.Start(new ProcessStartInfo
 				{
 					FileName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
 						? "explorer.exe"
@@ -152,7 +111,7 @@ namespace System.IO
 			}
 			else
 			{
-				using Process process = Process.Start(new ProcessStartInfo
+				using var process = Process.Start(new ProcessStartInfo
 				{
 					FileName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? url : "open",
 					Arguments = RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? $"-e {url}" : "",

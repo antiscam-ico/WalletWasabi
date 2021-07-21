@@ -6,6 +6,8 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using WalletWasabi.BitcoinCore.Rpc;
+using WalletWasabi.Blockchain.Analysis.FeesEstimation;
+using WalletWasabi.Blockchain.BlockFilters;
 using WalletWasabi.Blockchain.Keys;
 using WalletWasabi.Blockchain.TransactionBroadcasting;
 using WalletWasabi.Blockchain.TransactionBuilding;
@@ -40,7 +42,7 @@ namespace WalletWasabi.Tests.RegressionTests
 			bitcoinStore.IndexStore.NewFilter += Common.Wallet_NewFilterProcessed;
 			// Create the services.
 			// 1. Create connection service.
-			var nodes = new NodesGroup(global.Config.Network, requirements: Constants.NodeRequirements);
+			NodesGroup nodes = new(global.Config.Network, requirements: Constants.NodeRequirements);
 			nodes.ConnectedNodes.Add(await RegTestFixture.BackendRegTestNode.CreateNewP2pNodeAsync());
 
 			// 2. Create mempool service.
@@ -49,21 +51,22 @@ namespace WalletWasabi.Tests.RegressionTests
 			node.Behaviors.Add(bitcoinStore.CreateUntrustedP2pBehavior());
 
 			// 3. Create wasabi synchronizer service.
-			var wasabiClientFactory = new WasabiClientFactory(torEndPoint: null, backendUriGetter: () => new Uri(RegTestFixture.BackendEndPoint));
-			var synchronizer = new WasabiSynchronizer(rpc.Network, bitcoinStore, wasabiClientFactory);
+			using HttpClientFactory httpClientFactory = new(torEndPoint: null, backendUriGetter: () => new Uri(RegTestFixture.BackendEndPoint));
+			WasabiSynchronizer synchronizer = new(bitcoinStore, httpClientFactory);
+			HybridFeeProvider feeProvider = new(synchronizer, null);
 
 			// 4. Create key manager service.
 			var keyManager = KeyManager.CreateNew(out _, password);
 
 			// 5. Create wallet service.
-			var workDir = Tests.Common.GetWorkDir();
+			var workDir = Helpers.Common.GetWorkDir();
 
-			CachedBlockProvider blockProvider = new CachedBlockProvider(
-				new P2pBlockProvider(nodes, null, synchronizer, serviceConfiguration, network),
+			CachedBlockProvider blockProvider = new(
+				new P2pBlockProvider(nodes, null, httpClientFactory, serviceConfiguration, network),
 				bitcoinStore.BlockRepository);
 
-			var walletManager = new WalletManager(network, new WalletDirectories(workDir));
-			walletManager.RegisterServices(bitcoinStore, synchronizer, nodes, serviceConfiguration, synchronizer, blockProvider);
+			WalletManager walletManager = new(network, workDir, new WalletDirectories(network, workDir));
+			walletManager.RegisterServices(bitcoinStore, synchronizer, serviceConfiguration, feeProvider, blockProvider);
 
 			// Get some money, make it confirm.
 			var key = keyManager.GetNextReceiveKey("foo label", out _);
@@ -80,14 +83,16 @@ namespace WalletWasabi.Tests.RegressionTests
 				Interlocked.Exchange(ref Common.FiltersProcessedByWalletCount, 0);
 				nodes.Connect(); // Start connection service.
 				node.VersionHandshake(); // Start mempool service.
-				synchronizer.Start(requestInterval: TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(5), 10000); // Start wasabi synchronizer service.
+				synchronizer.Start(requestInterval: TimeSpan.FromSeconds(3), 10000); // Start wasabi synchronizer service.
+				await feeProvider.StartAsync(CancellationToken.None);
 
 				// Wait until the filter our previous transaction is present.
 				var blockCount = await rpc.GetBlockCountAsync();
 				await Common.WaitForFiltersToBeProcessedAsync(TimeSpan.FromSeconds(120), blockCount);
 				var wallet = await walletManager.AddAndStartWalletAsync(keyManager);
 
-				var broadcaster = new TransactionBroadcaster(network, bitcoinStore, synchronizer, nodes, walletManager, rpc);
+				TransactionBroadcaster broadcaster = new(network, bitcoinStore, httpClientFactory, walletManager);
+				broadcaster.Initialize(nodes, rpc);
 
 				var waitCount = 0;
 				while (wallet.Coins.Sum(x => x.Amount) == Money.Zero)
@@ -123,15 +128,15 @@ namespace WalletWasabi.Tests.RegressionTests
 				#region Basic
 
 				Script receive = keyManager.GetNextReceiveKey("Basic", out _).P2wpkhScript;
-				Money amountToSend = wallet.Coins.Where(x => !x.Unavailable).Sum(x => x.Amount) / 2;
+				Money amountToSend = wallet.Coins.Where(x => x.IsAvailable()).Sum(x => x.Amount) / 2;
 				var res = wallet.BuildTransaction(password, new PaymentIntent(receive, amountToSend, label: "foo"), FeeStrategy.SevenDaysConfirmationTargetStrategy, allowUnconfirmed: true);
 
 				foreach (SmartCoin coin in res.SpentCoins)
 				{
 					Assert.False(coin.CoinJoinInProgress);
 					Assert.True(coin.Confirmed);
-					Assert.Null(coin.SpenderTransactionId);
-					Assert.True(coin.Unspent);
+					Assert.Null(coin.SpenderTransaction);
+					Assert.False(coin.IsSpent());
 				}
 
 				Assert.Equal(2, res.InnerWalletOutputs.Count());
@@ -171,7 +176,7 @@ namespace WalletWasabi.Tests.RegressionTests
 				#region SubtractFeeFromAmount
 
 				receive = keyManager.GetNextReceiveKey("SubtractFeeFromAmount", out _).P2wpkhScript;
-				amountToSend = wallet.Coins.Where(x => !x.Unavailable).Sum(x => x.Amount) / 3;
+				amountToSend = wallet.Coins.Where(x => x.IsAvailable()).Sum(x => x.Amount) / 3;
 				res = wallet.BuildTransaction(password, new PaymentIntent(receive, amountToSend, subtractFee: true, label: "foo"), FeeStrategy.SevenDaysConfirmationTargetStrategy, allowUnconfirmed: true);
 
 				Assert.Equal(2, res.InnerWalletOutputs.Count());
@@ -322,7 +327,7 @@ namespace WalletWasabi.Tests.RegressionTests
 				Assert.Single(res.Transaction.Transaction.Outputs);
 				var maxBuiltTxOutput = res.Transaction.Transaction.Outputs.Single();
 				Assert.Equal(receive, maxBuiltTxOutput.ScriptPubKey);
-				Assert.Equal(wallet.Coins.Where(x => !x.Unavailable).Sum(x => x.Amount) - res.Fee, maxBuiltTxOutput.Value);
+				Assert.Equal(wallet.Coins.Where(x => x.IsAvailable()).Sum(x => x.Amount) - res.Fee, maxBuiltTxOutput.Value);
 
 				await broadcaster.SendTransactionAsync(res.Transaction);
 
@@ -336,7 +341,7 @@ namespace WalletWasabi.Tests.RegressionTests
 
 				res = wallet.BuildTransaction(password, new PaymentIntent(receive, MoneyRequest.CreateAllRemaining(), "foo"), FeeStrategy.SevenDaysConfirmationTargetStrategy,
 					allowUnconfirmed: true,
-					allowedInputs: wallet.Coins.Where(x => !x.Unavailable).Select(x => x.OutPoint).Take(1));
+					allowedInputs: wallet.Coins.Where(x => x.IsAvailable()).Select(x => x.OutPoint).Take(1));
 
 				Assert.Single(res.InnerWalletOutputs);
 				Assert.Empty(res.OuterWalletOutputs);
@@ -374,9 +379,9 @@ namespace WalletWasabi.Tests.RegressionTests
 				res = wallet.BuildTransaction(password, new PaymentIntent(receive2, MoneyRequest.CreateAllRemaining(), "my label"), FeeStrategy.SevenDaysConfirmationTargetStrategy, allowUnconfirmed: true);
 
 				Assert.Single(res.InnerWalletOutputs);
-				Assert.Equal("foo, my label", res.InnerWalletOutputs.Single().Label);
+				Assert.Equal("foo, my label", res.InnerWalletOutputs.Single().HdPubKey.Label);
 
-				amountToSend = wallet.Coins.Where(x => !x.Unavailable).Sum(x => x.Amount) / 3;
+				amountToSend = wallet.Coins.Where(x => x.IsAvailable()).Sum(x => x.Amount) / 3;
 				res = wallet.BuildTransaction(
 					password,
 					new PaymentIntent(
@@ -387,14 +392,14 @@ namespace WalletWasabi.Tests.RegressionTests
 
 				Assert.Single(res.InnerWalletOutputs);
 				Assert.Equal(2, res.OuterWalletOutputs.Count());
-				IEnumerable<string> change = res.InnerWalletOutputs.Single().Label.Labels;
+				IEnumerable<string> change = res.InnerWalletOutputs.Single().HdPubKey.Label.Labels;
 				Assert.Contains("outgoing", change);
 				Assert.Contains("outgoing2", change);
 
 				await broadcaster.SendTransactionAsync(res.Transaction);
 
 				IEnumerable<SmartCoin> unconfirmedCoins = wallet.Coins.Where(x => x.Height == Height.Mempool).ToArray();
-				IEnumerable<string> unconfirmedCoinLabels = unconfirmedCoins.SelectMany(x => x.Label.Labels).ToArray();
+				IEnumerable<string> unconfirmedCoinLabels = unconfirmedCoins.SelectMany(x => x.HdPubKey.Label.Labels).ToArray();
 				Assert.Contains("outgoing", unconfirmedCoinLabels);
 				Assert.Contains("outgoing2", unconfirmedCoinLabels);
 				IEnumerable<string> allKeyLabels = keyManager.GetKeys().SelectMany(x => x.Label.Labels);
@@ -406,7 +411,7 @@ namespace WalletWasabi.Tests.RegressionTests
 				await Common.WaitForFiltersToBeProcessedAsync(TimeSpan.FromSeconds(120), 1);
 
 				var bestHeight = new Height(bitcoinStore.SmartHeaderChain.TipHeight);
-				IEnumerable<string> confirmedCoinLabels = wallet.Coins.Where(x => x.Height == bestHeight).SelectMany(x => x.Label.Labels);
+				IEnumerable<string> confirmedCoinLabels = wallet.Coins.Where(x => x.Height == bestHeight).SelectMany(x => x.HdPubKey.Label.Labels);
 				Assert.Contains("outgoing", confirmedCoinLabels);
 				Assert.Contains("outgoing2", confirmedCoinLabels);
 				allKeyLabels = keyManager.GetKeys().SelectMany(x => x.Label.Labels);
@@ -421,8 +426,8 @@ namespace WalletWasabi.Tests.RegressionTests
 
 				receive = keyManager.GetNextReceiveKey("AllowedInputsDisallowUnconfirmed", out _).P2wpkhScript;
 
-				var allowedInputs = wallet.Coins.Where(x => !x.Unavailable).Select(x => x.OutPoint).Take(1);
-				var toSend = new PaymentIntent(receive, MoneyRequest.CreateAllRemaining(), "fizz");
+				var allowedInputs = wallet.Coins.Where(x => x.IsAvailable()).Select(x => x.OutPoint).Take(1);
+				PaymentIntent toSend = new(receive, MoneyRequest.CreateAllRemaining(), "fizz");
 
 				// covers:
 				// disallow unconfirmed with allowed inputs
@@ -492,7 +497,7 @@ namespace WalletWasabi.Tests.RegressionTests
 				Assert.Single(res.InnerWalletOutputs);
 				SmartCoin changeRes = res.InnerWalletOutputs.Single();
 				Assert.Equal(newChangeK.P2wpkhScript, changeRes.ScriptPubKey);
-				Assert.Equal(newChangeK.Label, changeRes.Label);
+				Assert.Equal(newChangeK.Label, changeRes.HdPubKey.Label);
 				Assert.Equal(KeyState.Clean, newChangeK.KeyState); // Still clean, because the tx wasn't yet propagated.
 
 				#endregion FeePcHigh
@@ -501,14 +506,9 @@ namespace WalletWasabi.Tests.RegressionTests
 			{
 				bitcoinStore.IndexStore.NewFilter -= Common.Wallet_NewFilterProcessed;
 				await walletManager.RemoveAndStopAllAsync(CancellationToken.None);
-				// Dispose wasabi synchronizer service.
-				if (synchronizer is { })
-				{
-					await synchronizer.StopAsync();
-				}
-				// Dispose connection service.
+				await synchronizer.StopAsync();
+				await feeProvider.StopAsync(CancellationToken.None);
 				nodes?.Dispose();
-				// Dispose mempool serving node.
 				node?.Disconnect();
 			}
 		}
@@ -520,7 +520,7 @@ namespace WalletWasabi.Tests.RegressionTests
 			bitcoinStore.IndexStore.NewFilter += Common.Wallet_NewFilterProcessed;
 			// Create the services.
 			// 1. Create connection service.
-			var nodes = new NodesGroup(global.Config.Network, requirements: Constants.NodeRequirements);
+			NodesGroup nodes = new(global.Config.Network, requirements: Constants.NodeRequirements);
 			nodes.ConnectedNodes.Add(await RegTestFixture.BackendRegTestNode.CreateNewP2pNodeAsync());
 
 			// 2. Create mempool service.
@@ -529,21 +529,22 @@ namespace WalletWasabi.Tests.RegressionTests
 			node.Behaviors.Add(bitcoinStore.CreateUntrustedP2pBehavior());
 
 			// 3. Create wasabi synchronizer service.
-			var wasabiClientFactory = new WasabiClientFactory(torEndPoint: null, backendUriGetter: () => new Uri(RegTestFixture.BackendEndPoint));
-			var synchronizer = new WasabiSynchronizer(rpc.Network, bitcoinStore, wasabiClientFactory);
+			using HttpClientFactory httpClientFactory = new(torEndPoint: null, backendUriGetter: () => new Uri(RegTestFixture.BackendEndPoint));
+			WasabiSynchronizer synchronizer = new(bitcoinStore, httpClientFactory);
+			HybridFeeProvider feeProvider = new(synchronizer, null);
 
 			// 4. Create key manager service.
 			var keyManager = KeyManager.CreateNew(out _, password);
 
 			// 5. Create wallet service.
-			var workDir = Tests.Common.GetWorkDir();
+			var workDir = Helpers.Common.GetWorkDir();
 
-			CachedBlockProvider blockProvider = new CachedBlockProvider(
-				new P2pBlockProvider(nodes, null, synchronizer, serviceConfiguration, network),
+			CachedBlockProvider blockProvider = new(
+				new P2pBlockProvider(nodes, null, httpClientFactory, serviceConfiguration, network),
 				bitcoinStore.BlockRepository);
 
-			var walletManager = new WalletManager(network, new WalletDirectories(workDir));
-			walletManager.RegisterServices(bitcoinStore, synchronizer, nodes, serviceConfiguration, synchronizer, blockProvider);
+			WalletManager walletManager = new(network, workDir, new WalletDirectories(network, workDir));
+			walletManager.RegisterServices(bitcoinStore, synchronizer, serviceConfiguration, feeProvider, blockProvider);
 
 			// Get some money, make it confirm.
 			var key = keyManager.GetNextReceiveKey("foo label", out _);
@@ -552,7 +553,8 @@ namespace WalletWasabi.Tests.RegressionTests
 			{
 				nodes.Connect(); // Start connection service.
 				node.VersionHandshake(); // Start mempool service.
-				synchronizer.Start(requestInterval: TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(5), 10000); // Start wasabi synchronizer service.
+				synchronizer.Start(requestInterval: TimeSpan.FromSeconds(3), 10000); // Start wasabi synchronizer service.
+				await feeProvider.StartAsync(CancellationToken.None);
 
 				// Wait until the filter our previous transaction is present.
 				var blockCount = await rpc.GetBlockCountAsync();
@@ -574,12 +576,10 @@ namespace WalletWasabi.Tests.RegressionTests
 				Assert.Equal(tx0Id, eventArgs.NewlyReceivedCoins.Single().TransactionId);
 				Assert.Single(wallet.Coins);
 
-				var broadcaster = new TransactionBroadcaster(network, bitcoinStore, synchronizer, nodes, walletManager, rpc);
+				TransactionBroadcaster broadcaster = new(network, bitcoinStore, httpClientFactory, walletManager);
+				broadcaster.Initialize(nodes, rpc);
 
-				var operations = new PaymentIntent(
-					new DestinationRequest(key.P2wpkhScript, Money.Coins(0.01m)),
-					new DestinationRequest(new Key().ScriptPubKey, Money.Coins(0.01m)),
-					new DestinationRequest(new Key().ScriptPubKey, Money.Coins(0.01m)));
+				PaymentIntent operations = new(new DestinationRequest(key.P2wpkhScript, Money.Coins(0.01m)), new DestinationRequest(new Key().ScriptPubKey, Money.Coins(0.01m)), new DestinationRequest(new Key().ScriptPubKey, Money.Coins(0.01m)));
 				var tx1Res = wallet.BuildTransaction(password, operations, FeeStrategy.TwentyMinutesConfirmationTargetStrategy, allowUnconfirmed: true);
 				Assert.Equal(2, tx1Res.InnerWalletOutputs.Count());
 				Assert.Equal(2, tx1Res.OuterWalletOutputs.Count());
@@ -600,12 +600,12 @@ namespace WalletWasabi.Tests.RegressionTests
 
 				// There is a coin destroyed
 				var allCoins = wallet.TransactionProcessor.Coins.AsAllCoinsView();
-				Assert.Equal(1, allCoins.Count(x => x.Unavailable && x.SpenderTransactionId == tx1Res.Transaction.GetHash()));
+				Assert.Equal(1, allCoins.Count(x => !x.IsAvailable() && x.SpenderTransaction?.GetHash() == tx1Res.Transaction.GetHash()));
 
 				// There is at least one coin created from the destruction of the first coin
-				Assert.Contains(wallet.Coins, x => x.SpentOutputs.Any(o => o.Hash == tx0Id));
+				Assert.Contains(wallet.Coins, x => x.Transaction.Transaction.Inputs.Any(o => o.PrevOut.Hash == tx0Id));
 
-				var totalWallet = wallet.Coins.Where(c => !c.Unavailable).Sum(c => c.Amount);
+				var totalWallet = wallet.Coins.Where(c => c.IsAvailable()).Sum(c => c.Amount);
 				Assert.Equal((1 * Money.COIN) - tx1Res.Fee.Satoshi, totalWallet);
 
 				// Spend the unconfirmed and unspent coin (send it to ourself)
@@ -629,12 +629,12 @@ namespace WalletWasabi.Tests.RegressionTests
 
 				// There is a coin destroyed
 				allCoins = wallet.TransactionProcessor.Coins.AsAllCoinsView();
-				Assert.Equal(2, allCoins.Count(x => x.Unavailable && x.SpenderTransactionId == tx2Hash));
+				Assert.Equal(2, allCoins.Count(x => !x.IsAvailable() && x.SpenderTransaction?.GetHash() == tx2Hash));
 
 				// There is at least one coin created from the destruction of the first coin
-				Assert.Contains(wallet.Coins, x => x.SpentOutputs.Any(o => o.Hash == tx1Res.Transaction.GetHash()));
+				Assert.Contains(wallet.Coins, x => x.Transaction.Transaction.Inputs.Any(o => o.PrevOut.Hash == tx1Res.Transaction.GetHash()));
 
-				totalWallet = wallet.Coins.Where(c => !c.Unavailable).Sum(c => c.Amount);
+				totalWallet = wallet.Coins.Where(c => c.IsAvailable()).Sum(c => c.Amount);
 				Assert.Equal((1 * Money.COIN) - tx1Res.Fee.Satoshi - tx2Res.Fee.Satoshi, totalWallet);
 
 				Interlocked.Exchange(ref Common.FiltersProcessedByWalletCount, 0);
@@ -675,14 +675,9 @@ namespace WalletWasabi.Tests.RegressionTests
 			{
 				bitcoinStore.IndexStore.NewFilter -= Common.Wallet_NewFilterProcessed;
 				await walletManager.RemoveAndStopAllAsync(CancellationToken.None);
-				// Dispose wasabi synchronizer service.
-				if (synchronizer is { })
-				{
-					await synchronizer.StopAsync();
-				}
-				// Dispose connection service.
+				await synchronizer.StopAsync();
+				await feeProvider.StopAsync(CancellationToken.None);
 				nodes?.Dispose();
-				// Dispose mempool serving node.
 				node?.Disconnect();
 			}
 		}
@@ -694,7 +689,7 @@ namespace WalletWasabi.Tests.RegressionTests
 
 			// Create the services.
 			// 1. Create connection service.
-			var nodes = new NodesGroup(global.Config.Network, requirements: Constants.NodeRequirements);
+			NodesGroup nodes = new(global.Config.Network, requirements: Constants.NodeRequirements);
 			nodes.ConnectedNodes.Add(await RegTestFixture.BackendRegTestNode.CreateNewP2pNodeAsync());
 
 			// 2. Create mempool service.
@@ -703,20 +698,21 @@ namespace WalletWasabi.Tests.RegressionTests
 			node.Behaviors.Add(bitcoinStore.CreateUntrustedP2pBehavior());
 
 			// 3. Create wasabi synchronizer service.
-			var wasabiClientFactory = new WasabiClientFactory(torEndPoint: null, backendUriGetter: () => new Uri(RegTestFixture.BackendEndPoint));
-			var synchronizer = new WasabiSynchronizer(rpc.Network, bitcoinStore, wasabiClientFactory);
+			using HttpClientFactory httpClientFactory = new(torEndPoint: null, backendUriGetter: () => new Uri(RegTestFixture.BackendEndPoint));
+			WasabiSynchronizer synchronizer = new(bitcoinStore, httpClientFactory);
+			HybridFeeProvider feeProvider = new(synchronizer, null);
 
 			// 4. Create key manager service.
 			var keyManager = KeyManager.CreateNew(out _, password);
 
 			// 5. Create wallet service.
-			var workDir = Tests.Common.GetWorkDir();
+			var workDir = Helpers.Common.GetWorkDir();
 
-			CachedBlockProvider blockProvider = new CachedBlockProvider(
-				new P2pBlockProvider(nodes, null, synchronizer, serviceConfiguration, network),
+			CachedBlockProvider blockProvider = new(
+				new P2pBlockProvider(nodes, null, httpClientFactory, serviceConfiguration, network),
 				bitcoinStore.BlockRepository);
 
-			using var wallet = Wallet.CreateAndRegisterServices(network, bitcoinStore, keyManager, synchronizer, nodes, workDir, serviceConfiguration, synchronizer, blockProvider);
+			using var wallet = Wallet.CreateAndRegisterServices(network, bitcoinStore, keyManager, synchronizer, workDir, serviceConfiguration, feeProvider, blockProvider);
 			wallet.NewFilterProcessed += Common.Wallet_NewFilterProcessed;
 
 			Assert.Empty(wallet.Coins);
@@ -728,7 +724,8 @@ namespace WalletWasabi.Tests.RegressionTests
 			{
 				nodes.Connect(); // Start connection service.
 				node.VersionHandshake(); // Start mempool service.
-				synchronizer.Start(requestInterval: TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(5), 10000); // Start wasabi synchronizer service.
+				synchronizer.Start(requestInterval: TimeSpan.FromSeconds(3), 10000); // Start wasabi synchronizer service.
+				await feeProvider.StartAsync(CancellationToken.None);
 
 				// Wait until the filter our previous transaction is present.
 				var blockCount = await rpc.GetBlockCountAsync();
@@ -742,26 +739,26 @@ namespace WalletWasabi.Tests.RegressionTests
 				Assert.Empty(wallet.Coins);
 
 				var tx0Id = await rpc.SendToAddressAsync(key.GetP2wpkhAddress(network), Money.Coins(1m), replaceable: true);
-				while (wallet.Coins.Count() == 0)
+				while (!wallet.Coins.Any())
 				{
 					await Task.Delay(500); // Waits for the funding transaction get to the mempool.
 				}
 
 				Assert.Single(wallet.Coins);
-				Assert.True(wallet.Coins.First().IsReplaceable);
+				Assert.True(wallet.Coins.First().IsReplaceable());
 
 				var bfr = await rpc.BumpFeeAsync(tx0Id);
 				var tx1Id = bfr.TransactionId;
 				await Task.Delay(2000); // Waits for the replacement transaction get to the mempool.
 				Assert.Single(wallet.Coins);
-				Assert.True(wallet.Coins.First().IsReplaceable);
+				Assert.True(wallet.Coins.First().IsReplaceable());
 				Assert.Equal(tx1Id, wallet.Coins.First().TransactionId);
 
 				bfr = await rpc.BumpFeeAsync(tx1Id);
 				var tx2Id = bfr.TransactionId;
 				await Task.Delay(2000); // Waits for the replacement transaction get to the mempool.
 				Assert.Single(wallet.Coins);
-				Assert.True(wallet.Coins.First().IsReplaceable);
+				Assert.True(wallet.Coins.First().IsReplaceable());
 				Assert.Equal(tx2Id, wallet.Coins.First().TransactionId);
 
 				Interlocked.Exchange(ref Common.FiltersProcessedByWalletCount, 0);
@@ -770,20 +767,15 @@ namespace WalletWasabi.Tests.RegressionTests
 
 				var coin = Assert.Single(wallet.Coins);
 				Assert.True(coin.Confirmed);
-				Assert.False(coin.IsReplaceable);
+				Assert.False(coin.IsReplaceable());
 				Assert.Equal(tx2Id, coin.TransactionId);
 			}
 			finally
 			{
 				await wallet.StopAsync(CancellationToken.None);
-				// Dispose wasabi synchronizer service.
-				if (synchronizer is { })
-				{
-					await synchronizer.StopAsync();
-				}
-				// Dispose connection service.
+				await synchronizer.StopAsync();
+				await feeProvider.StopAsync(CancellationToken.None);
 				nodes?.Dispose();
-				// Dispose mempool serving node.
 				node?.Disconnect();
 			}
 		}
