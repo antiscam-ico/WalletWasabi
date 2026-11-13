@@ -1,52 +1,72 @@
-using System.ComponentModel;
+using WalletWasabi.Models;
 
-namespace WalletWasabi.Hwi.Models
+namespace WalletWasabi.Hwi.Models;
+
+/// <summary>
+/// Source: https://github.com/bitcoin-core/HWI/pull/228
+/// </summary>
+public enum HardwareWalletModels
 {
-	/// <summary>
-	/// Source: https://github.com/bitcoin-core/HWI/pull/228
-	/// </summary>
-	public enum HardwareWalletModels
-	{
-		[Description("Hardware Wallet")]
-		Unknown,
+	[FriendlyName("Hardware Wallet")]
+	Unknown,
 
-		[Description("Coldcard")]
-		Coldcard,
+	[FriendlyName("Coldcard")]
+	Coldcard,
 
-		[Description("Coldcard Simulator")]
-		Coldcard_Simulator,
+	[FriendlyName("Coldcard Simulator")]
+	Coldcard_Simulator,
 
-		[Description("BitBox")]
-		DigitalBitBox_01,
+	[FriendlyName("BitBox")]
+	DigitalBitBox_01,
 
-		[Description("BitBox Simulator")]
-		DigitalBitBox_01_Simulator,
+	[FriendlyName("BitBox Simulator")]
+	DigitalBitBox_01_Simulator,
 
-		[Description("KeepKey")]
-		KeepKey,
+	[FriendlyName("KeepKey")]
+	KeepKey,
 
-		[Description("KeepKey Simulator")]
-		KeepKey_Simulator,
+	[FriendlyName("KeepKey Simulator")]
+	KeepKey_Simulator,
 
-		[Description("Ledger Nano S")]
-		Ledger_Nano_S,
+	[FriendlyName("Ledger Nano S")]
+	Ledger_Nano_S,
 
-		[Description("Trezor One")]
-		Trezor_1,
+	[FriendlyName("Ledger Nano S Plus")]
+	Ledger_Nano_S_Plus,
 
-		[Description("Trezor One Simulator")]
-		Trezor_1_Simulator,
+	[FriendlyName("Ledger Nano X")]
+	Ledger_Nano_X,
 
-		[Description("Trezor T")]
-		Trezor_T,
+	[FriendlyName("Trezor One")]
+	Trezor_1,
 
-		[Description("Trezor T Simulator")]
-		Trezor_T_Simulator,
+	[FriendlyName("Trezor One Simulator")]
+	Trezor_1_Simulator,
 
-		[Description("BitBox")]
-		BitBox02_BTCOnly,
+	[FriendlyName("Trezor T")]
+	Trezor_T,
 
-		[Description("BitBox")]
-		BitBox02_Multi,
-	}
+	[FriendlyName("Trezor T Simulator")]
+	Trezor_T_Simulator,
+
+	[FriendlyName("Trezor Safe 3")]
+	Trezor_Safe_3,
+
+	[FriendlyName("Trezor Safe 5")]
+	Trezor_Safe_5,
+
+	[FriendlyName("BitBox")]
+	BitBox02_BTCOnly,
+
+	[FriendlyName("BitBox")]
+	BitBox02_Multi,
+
+	[FriendlyName("BitBox")]
+	BitBox02_Nova_BTCOnly,
+
+	[FriendlyName("BitBox")]
+	BitBox02_Nova_Multi,
+
+	[FriendlyName("Jade")]
+	Jade,
 }

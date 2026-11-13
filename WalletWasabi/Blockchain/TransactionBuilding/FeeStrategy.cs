@@ -1,77 +1,70 @@
 using NBitcoin;
-using System;
+using System.Diagnostics.CodeAnalysis;
 using WalletWasabi.Helpers;
 
-namespace WalletWasabi.Blockchain.TransactionBuilding
+namespace WalletWasabi.Blockchain.TransactionBuilding;
+
+public class FeeStrategy
 {
-	public class FeeStrategy
+	public static readonly FeeRate MinimumFeeRate = Constants.MinRelayFeeRate;
+
+	private int? _target;
+	private FeeRate? _feeRate;
+
+	private FeeStrategy(int confirmationTarget)
 	{
-		private int _target;
-		private FeeRate _rate;
-
-		private FeeStrategy(FeeStrategyType type, int? confirmationTarget, FeeRate feeRate)
-		{
-			Type = type;
-			if (type == FeeStrategyType.Rate)
-			{
-				if (confirmationTarget is { })
-				{
-					throw new ArgumentException($"{nameof(confirmationTarget)} must be null.");
-				}
-				Guard.NotNull(nameof(feeRate), feeRate);
-				if (feeRate < new FeeRate(1m))
-				{
-					throw new ArgumentOutOfRangeException(nameof(feeRate), feeRate, "Cannot be less than 1 sat/vByte.");
-				}
-				_rate = feeRate;
-			}
-			else if (type == FeeStrategyType.Target)
-			{
-				if (feeRate is { })
-				{
-					throw new ArgumentException($"{nameof(feeRate)} must be null.");
-				}
-				Guard.NotNull(nameof(confirmationTarget), confirmationTarget);
-				_target = Guard.InRangeAndNotNull(nameof(confirmationTarget), confirmationTarget.Value, Constants.TwentyMinutesConfirmationTarget, Constants.SevenDaysConfirmationTarget);
-			}
-			else
-			{
-				throw new NotSupportedException(type.ToString());
-			}
-		}
-
-		public FeeStrategyType Type { get; }
-
-		public int Target
-		{
-			get
-			{
-				if (Type != FeeStrategyType.Target)
-				{
-					throw new NotSupportedException($"Cannot get {nameof(Target)} with {nameof(FeeStrategyType)} {Type}.");
-				}
-				return _target;
-			}
-		}
-
-		public FeeRate Rate
-		{
-			get
-			{
-				if (Type != FeeStrategyType.Rate)
-				{
-					throw new NotSupportedException($"Cannot get {nameof(Rate)} with {nameof(FeeStrategyType)} {Type}.");
-				}
-				return _rate;
-			}
-		}
-
-		public static FeeStrategy TwentyMinutesConfirmationTargetStrategy { get; } = CreateFromConfirmationTarget(Constants.TwentyMinutesConfirmationTarget);
-		public static FeeStrategy OneDayConfirmationTargetStrategy { get; } = CreateFromConfirmationTarget(Constants.OneDayConfirmationTarget);
-		public static FeeStrategy SevenDaysConfirmationTargetStrategy { get; } = CreateFromConfirmationTarget(Constants.SevenDaysConfirmationTarget);
-
-		public static FeeStrategy CreateFromConfirmationTarget(int confirmationTarget) => new FeeStrategy(FeeStrategyType.Target, confirmationTarget: confirmationTarget, feeRate: null);
-
-		public static FeeStrategy CreateFromFeeRate(FeeRate feeRate) => new FeeStrategy(FeeStrategyType.Rate, confirmationTarget: null, feeRate: feeRate);
+		Type = FeeStrategyType.Target;
+		_target = Guard.InRangeAndNotNull(nameof(confirmationTarget), confirmationTarget, smallest: Constants.TwentyMinutesConfirmationTarget, greatest: Constants.SevenDaysConfirmationTarget);
+		_feeRate = null;
 	}
+
+	private FeeStrategy(FeeRate feeRate)
+	{
+		if (feeRate < MinimumFeeRate)
+		{
+			throw new ArgumentOutOfRangeException(nameof(feeRate), feeRate, $"Cannot be less than {MinimumFeeRate.SatoshiPerByte} sat/vByte.");
+		}
+
+		Type = FeeStrategyType.Rate;
+		_target = null;
+		_feeRate = feeRate;
+	}
+
+	public static FeeStrategy TwentyMinutesConfirmationTargetStrategy { get; } = CreateFromConfirmationTarget(Constants.TwentyMinutesConfirmationTarget);
+	public static FeeStrategy OneDayConfirmationTargetStrategy { get; } = CreateFromConfirmationTarget(Constants.OneDayConfirmationTarget);
+	public static FeeStrategy SevenDaysConfirmationTargetStrategy { get; } = CreateFromConfirmationTarget(Constants.SevenDaysConfirmationTarget);
+
+	public FeeStrategyType Type { get; }
+
+	public bool TryGetTarget([NotNullWhen(true)] out int? target)
+	{
+		if (Type == FeeStrategyType.Target)
+		{
+			target = _target!.Value;
+			return true;
+		}
+
+		target = null;
+		return false;
+	}
+
+	public bool TryGetFeeRate([NotNullWhen(true)] out FeeRate? rate)
+	{
+		if (Type == FeeStrategyType.Rate)
+		{
+			rate = _feeRate!;
+			return true;
+		}
+
+		rate = null;
+		return false;
+	}
+
+	public static FeeStrategy CreateFromConfirmationTarget(int confirmationTarget)
+		=> new(confirmationTarget: confirmationTarget);
+
+	public static FeeStrategy CreateFromFeeRate(FeeRate feeRate)
+		=> new(feeRate: feeRate);
+
+	public static FeeStrategy CreateFromFeeRate(decimal satoshiPerByte) => CreateFromFeeRate(new FeeRate(satoshiPerByte));
 }

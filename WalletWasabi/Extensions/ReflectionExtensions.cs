@@ -1,16 +1,16 @@
+using System.Reflection;
 using System.Runtime.CompilerServices;
 
-namespace System.Reflection
+namespace WalletWasabi.Extensions;
+
+public static class MethodInfoExtensions
 {
-	public static class MethodInfoExtensions
+	public static bool IsAsync(this MethodInfo mi)
 	{
-		public static bool IsAsync(this MethodInfo mi)
-		{
-			Type attType = typeof(AsyncStateMachineAttribute);
+		Type attType = typeof(AsyncStateMachineAttribute);
 
-			var attrib = (AsyncStateMachineAttribute)mi.GetCustomAttribute(attType);
+		var attrib = mi.GetCustomAttribute(attType) as AsyncStateMachineAttribute;
 
-			return attrib is { };
-		}
+		return attrib is not null;
 	}
 }

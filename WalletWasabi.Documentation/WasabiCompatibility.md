@@ -1,50 +1,48 @@
 # Abstract
 
-This document lists all the officially supported software and devices by Wasabi Wallet. This means that Wasabi is tested on those systems and we put all the efforts to make it work and maintain compatibility. One of our main goals is to not break the user-space so we have to set up boundaries that we can responsibly maintain. This does not necessarily mean that systems that are not listed will not work - they might work but we do not officially support them. There are a lot of potentially supported systems out there and more to come, but we can only promise support and stability on platforms that our dependencies support, too.
+This document lists all the officially supported software and devices by Wasabi Wallet. This means that Wasabi is tested on those systems, and we put all the efforts to make it work and maintain compatibility. One of our main goals is to not break the user-space, so we have to set up boundaries that we can responsibly maintain. This does not necessarily mean that systems that are not listed will not work - they might work, but we do not officially support them. There are a lot of potentially supported systems out there and more to come, but we can only promise support and stability on platforms that our dependencies support, too.
 
 # Officially Supported Operating Systems
 
-- Windows 10
-- macOs 10.13+
-- Ubuntu 16.04+
-- Fedora 30+
-- Debian 9+
+- Windows 10 1607+
+- Windows 11 23H2+
+- macOS 14+
+- Ubuntu 22.04+
+- Fedora 42+
+- Debian 12+
 
-# Officially Supported Hardware wallets
+# Officially Supported Hardware Wallets
 
-- ColdCard MK1
-- ColdCard MK2
-- ColdCard MK3
-- Ledger Nano S
+- **Trezor**: Model T, Safe 3, Safe 5
+- **ColdCard**: MK1, MK2, MK3, MK4, Q
+- **Ledger**: Nano S, Nano S Plus, Nano X
+- **Blockstream**: Jade
+- **BitBox**: BitBox02-BtcOnly, BitBox02 Nova<sup>1*</sup>
+
+<sup><sup>1*</sup> The device by default asks for a "Pairing code", currently, there is no such function in Wasabi. Therefore, either disable the feature or unlock the device with BitBoxApp or hwi-qt before using it with Wasabi.</sup>
 
 # Officially Supported Architectures
 
-- x64
+- x64 (Windows, Linux, macOS)
+- arm64 (macOS, Linux (experimental))
 
 # FAQ
 
-## What are the bottlenecks of officially supporting Operating Systems?
+## What is required to run Wasabi Wallet on officially supported Operating Systems?
 
 Wasabi dependencies are:
-- .NET Core [reqs](https://github.com/dotnet/core/blob/master/release-notes/3.1/3.1-supported-os.md).
+- .NET 10.0 [reqs](https://github.com/dotnet/core/blob/main/release-notes/10.0/supported-os.md).
 - Avalonia [reqs](https://github.com/AvaloniaUI/Avalonia/wiki/Runtime-Requirements).
-- NBitcoin dependencies and requirements are the same as .NET Core.
-- Bitcoin Knots (same requirements as Bitcoin Core) [reqs](https://bitcoin.org/en/bitcoin-core/features/requirements#system-requirements).
 
 ## What are the bottlenecks of officially supporting Hardware Wallets?
 
 Wasabi dependencies are:
-- [HWI](https://github.com/bitcoin-core/HWI), check the [device support](https://github.com/bitcoin-core/HWI#device-support) list there. Some hardware wallets supported by HWI are still not compatible with the Wallet because they implemented custom workflows.
+- [HWI](https://github.com/bitcoin-core/HWI), check the [device support](https://github.com/bitcoin-core/HWI#device-support) list there. Some hardware wallets supported by HWI are still not compatible with Wasabi Wallet because they implemented custom workflows.
 
-## What about Whonix and Tails?
+## What about Tails and Whonix?
 
-Whonix and Tails are privacy-oriented OSs so it makes sense to use them with Wasabi Wallet. At the moment Wasabi is working properly on these platforms but our dependencies do not officially support them, so we cannot make promises regarding future stability.
+Tails and Whonix are privacy-oriented OSs, so it makes sense to use them with Wasabi Wallet. At the moment, Wasabi is working properly on these platforms, but our dependencies do not officially support them, so we cannot make promises regarding future stability.
 
-## What about Trezor?
+Wasabi automatically detects if it is running on Tails or Whonix and will use the already running system-wide Tor instance, instead of starting its own.
 
-Trezor One and Trezor T are popular hardware wallets that Wasabi officially supported in the past. However, from April 2020 to June 2020 Trezor's new firmware releases introduced 3 backward-incompatible changes, which made us reassess our official support for the hardware wallet.
-- https://github.com/bitcoin-core/HWI/pull/319
-- https://github.com/zkSNACKs/WalletWasabi/issues/3734
-- https://github.com/trezor/trezor-firmware/issues/1044
-
-At the moment Wasabi is working properly with Trezor One and Trezor T, but after resolving these issues, we must concede guaranteeing future stability is beyond our control, hence we shan't promise to continue official support forthwith.
+On Wasabi version [2.7.2](https://github.com/WalletWasabi/WalletWasabi/releases/tag/v2.7.2) and earlier, Wasabi should be started with the following startup parameter: `--UseTor=EnabledOnlyRunning`.

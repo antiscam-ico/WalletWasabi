@@ -1,17 +1,22 @@
 ---
 name: Feature Request
-about: Suggest an idea for this project
-
+about: Request a Feature
+title: "[Feature]: "
+labels: ["feature", "untriaged"]
 ---
 
-### Is your feature request related to a problem? Please describe.
+<!-- Ensure you are familiar with the project by reading the documentation and browsing through the already existing feature requests.
+Be prepared to provide additional information or clarification if requested.
+Be patient and have understanding if the request is declined. -->
 
-A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]
+### Description
 
-### Describe the solution you'd like
+<!-- Clearly articulate the feature request and its desired outcomes in a detailed manner. -->
 
-A clear and concise description of what you want to happen.
+### Reasoning
 
-### Describe alternatives you've considered
+<!-- Tell us why would this feature be important and what problems would it solve. -->
 
-A clear and concise description of any alternative solutions or features you've considered.
+### Designs
+
+<!-- Include any additional information such as screenshots or code examples that could be useful in understanding the request. -->

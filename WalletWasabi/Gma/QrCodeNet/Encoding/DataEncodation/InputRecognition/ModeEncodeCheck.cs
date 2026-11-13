@@ -1,84 +1,70 @@
-using System;
+namespace Gma.QrCodeNet.Encoding.DataEncodation.InputRecognition;
 
-namespace Gma.QrCodeNet.Encoding.DataEncodation.InputRecognition
+public static class ModeEncodeCheck
 {
-	public static class ModeEncodeCheck
+	/// <summary>
+	/// Encoding.GetEncoding.GetBytes will transform char to 0x3F if that char not belong to current encoding table.
+	/// 0x3F is '?'
+	/// </summary>
+	private const int QuestionMarkChar = 0x3F;
+
+	/// <summary>
+	/// Use given encoding to check input string from starting position. If encoding table is suitable solution.
+	/// it will return -1. Else it will return failed encoding position.
+	/// </summary>
+	/// <param name="content">Input string</param>
+	/// <param name="encodingName">Encoding name. Check ECI table</param>
+	/// <returns>Returns -1 if from starting position to end encoding success. Else returns fail position</returns>
+	internal static int TryEncodeEightBitByte(string content, string encodingName, int startingPosition, int contentLength)
 	{
-		/// <summary>
-		/// Encoding.GetEncoding.GetBytes will transform char to 0x3F if that char not belong to current encoding table.
-		/// 0x3F is '?'
-		/// </summary>
-		private const int QuestionMarkChar = 0x3F;
-
-		public static bool IsModeEncodeValid(string encoding, string content)
+		if (string.IsNullOrEmpty(content))
 		{
-			return EightBitByteCheck(encoding, content);
+			throw new IndexOutOfRangeException("Input cannot be null or empty.");
 		}
 
-		private static bool EightBitByteCheck(string encodingName, string content)
+		System.Text.Encoding encoding;
+		try
 		{
-			int tryEncodePos = TryEncodeEightBitByte(content, encodingName, 0, content.Length);
-			return tryEncodePos == -1;
+			encoding = System.Text.Encoding.GetEncoding(encodingName);
+		}
+		catch (ArgumentException)
+		{
+			return startingPosition;
 		}
 
-		/// <summary>
-		/// Use given encoding to check input string from starting position. If encoding table is suitable solution.
-		/// it will return -1. Else it will return failed encoding position.
-		/// </summary>
-		/// <param name="content">Input string</param>
-		/// <param name="encodingName">Encoding name. Check ECI table</param>
-		/// <returns>Returns -1 if from starting position to end encoding success. Else returns fail position</returns>
-		internal static int TryEncodeEightBitByte(string content, string encodingName, int startingPosition, int contentLength)
+		char[] currentChar = new char[1];
+		byte[] bytes;
+
+		for (int index = startingPosition; index < contentLength; index++)
 		{
-			if (string.IsNullOrEmpty(content))
+			currentChar[0] = content[index];
+			bytes = encoding.GetBytes(currentChar);
+			int length = bytes.Length;
+			if (currentChar[0] != '?' && length == 1 && bytes[0] == QuestionMarkChar)
 			{
-				throw new IndexOutOfRangeException("Input cannot be null or empty.");
+				return index;
 			}
-
-			System.Text.Encoding encoding;
-			try
+			else if (length > 1)
 			{
-				encoding = System.Text.Encoding.GetEncoding(encodingName);
+				return index;
 			}
-			catch (ArgumentException)
-			{
-				return startingPosition;
-			}
-
-			char[] currentChar = new char[1];
-			byte[] bytes;
-
-			for (int index = startingPosition; index < contentLength; index++)
-			{
-				currentChar[0] = content[index];
-				bytes = encoding.GetBytes(currentChar);
-				int length = bytes.Length;
-				if (currentChar[0] != '?' && length == 1 && bytes[0] == QuestionMarkChar)
-				{
-					return index;
-				}
-				else if (length > 1)
-				{
-					return index;
-				}
-			}
-
-			for (int index = 0; index < startingPosition; index++)
-			{
-				currentChar[0] = content[index];
-				bytes = encoding.GetBytes(currentChar);
-				int length = bytes.Length;
-				if (currentChar[0] != '?' && length == 1 && bytes[0] == QuestionMarkChar)
-				{
-					return index;
-				}
-				else if (length > 1)
-				{
-					return index;
-				}
-			}
-
-			return -1;
 		}
+
+		for (int index = 0; index < startingPosition; index++)
+		{
+			currentChar[0] = content[index];
+			bytes = encoding.GetBytes(currentChar);
+			int length = bytes.Length;
+			if (currentChar[0] != '?' && length == 1 && bytes[0] == QuestionMarkChar)
+			{
+				return index;
+			}
+			else if (length > 1)
+			{
+				return index;
+			}
+		}
+
+		return -1;
 	}
 }

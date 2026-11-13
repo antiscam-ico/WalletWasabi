@@ -1,183 +1,145 @@
 using System.Diagnostics;
-using System.IO.Compression;
+using System.Globalization;
+using System.IO;
 using System.Runtime.InteropServices;
-using System.Threading.Tasks;
-using WalletWasabi.Crypto;
-using WalletWasabi.Helpers;
-using WalletWasabi.Logging;
 
-namespace System.IO
+namespace WalletWasabi.Helpers;
+
+public static class IoHelpers
 {
-	public static class IoHelpers
+	/// <summary>
+	/// Attempts to delete <paramref name="directory"/> with retry feature to allow File Explorer or any other
+	/// application that holds the directory handle of the <paramref name="directory"/> to release it.
+	/// </summary>
+	/// <see href="https://stackoverflow.com/questions/329355/cannot-delete-directory-with-directory-deletepath-true/14933880#44324346"/>
+	public static async Task<bool> TryDeleteDirectoryAsync(string directory, int maxRetries = 10, int millisecondsDelay = 100)
 	{
-		/// <summary>
-		/// Attempts to delete <paramref name="directory"/> with retry feature to allow File Explorer or any other
-		/// application that holds the directory handle of the <paramref name="directory"/> to release it.
-		/// </summary>
-		/// <see href="https://stackoverflow.com/questions/329355/cannot-delete-directory-with-directory-deletepath-true/14933880#44324346"/>
-		public static async Task<bool> TryDeleteDirectoryAsync(string directory, int maxRetries = 10, int millisecondsDelay = 100)
-		{
-			Guard.NotNull(nameof(directory), directory);
+		ArgumentOutOfRangeException.ThrowIfLessThan(maxRetries, 1, nameof(maxRetries));
+		ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsDelay, 1, nameof(millisecondsDelay));
 
-			if (maxRetries < 1)
-			{
-				throw new ArgumentOutOfRangeException(nameof(maxRetries));
-			}
-
-			if (millisecondsDelay < 1)
-			{
-				throw new ArgumentOutOfRangeException(nameof(millisecondsDelay));
-			}
-
-			for (int i = 0; i < maxRetries; ++i)
-			{
-				try
-				{
-					if (Directory.Exists(directory))
-					{
-						Directory.Delete(directory, recursive: true);
-					}
-
-					return true;
-				}
-				catch (DirectoryNotFoundException e)
-				{
-					Logger.LogDebug($"Directory was not found: {e}");
-
-					// Directory does not exist. So the operation is trivially done.
-					return true;
-				}
-				catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
-				{
-					await Task.Delay(millisecondsDelay).ConfigureAwait(false);
-				}
-			}
-
-			return false;
-		}
-
-		public static async Task BetterExtractZipToDirectoryAsync(string src, string dest)
+		for (int i = 0; i < maxRetries; ++i)
 		{
 			try
 			{
-				ZipFile.ExtractToDirectory(src, dest);
-			}
-			catch (UnauthorizedAccessException)
-			{
-				await Task.Delay(100).ConfigureAwait(false);
-				ZipFile.ExtractToDirectory(src, dest);
-			}
-		}
-
-		public static void EnsureContainingDirectoryExists(string fileNameOrPath)
-		{
-			string fullPath = Path.GetFullPath(fileNameOrPath); // No matter if relative or absolute path is given to this.
-			string? dir = Path.GetDirectoryName(fullPath);
-			EnsureDirectoryExists(dir);
-		}
-
-		/// <summary>
-		/// It's like Directory.CreateDirectory, but does not fail when root is given.
-		/// </summary>
-		public static void EnsureDirectoryExists(string? dir)
-		{
-			if (!string.IsNullOrWhiteSpace(dir)) // If root is given, then do not worry.
-			{
-				Directory.CreateDirectory(dir); // It does not fail if it exists.
-			}
-		}
-
-		public static void EnsureFileExists(string filePath)
-		{
-			if (!File.Exists(filePath))
-			{
-				EnsureContainingDirectoryExists(filePath);
-
-				File.Create(filePath)?.Dispose();
-			}
-		}
-
-		public static byte[] GetHashFile(string filePath)
-		{
-			var bytes = File.ReadAllBytes(filePath);
-			return HashHelpers.GenerateSha256Hash(bytes);
-		}
-
-		public static bool CheckExpectedHash(string filePath, string sourceFolderPath)
-		{
-			var fileHash = GetHashFile(filePath);
-			try
-			{
-				var digests = File.ReadAllLines(Path.Combine(sourceFolderPath, "digests.txt"));
-				foreach (var digest in digests)
+				if (Directory.Exists(directory))
 				{
-					var expectedHash = ByteHelpers.FromHex(digest);
-					if (ByteHelpers.CompareFastUnsafe(fileHash, expectedHash))
-					{
-						return true;
-					}
+					Directory.Delete(directory, recursive: true);
 				}
-				return false;
+
+				return true;
 			}
-			catch
+			catch (DirectoryNotFoundException e)
 			{
-				return false;
+				Logger.LogDebug($"Directory was not found: {e}");
+
+				// Directory does not exist. So the operation is trivially done.
+				return true;
+			}
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+			{
+				await Task.Delay(millisecondsDelay).ConfigureAwait(false);
 			}
 		}
 
-		public static void OpenFolderInFileExplorer(string dirPath)
+		return false;
+	}
+
+	public static void EnsureContainingDirectoryExists(string fileNameOrPath)
+	{
+		string fullPath = Path.GetFullPath(fileNameOrPath); // No matter if relative or absolute path is given to this.
+		string? dir = Path.GetDirectoryName(fullPath);
+		EnsureDirectoryExists(dir);
+	}
+
+	/// <summary>
+	/// Makes sure that directory <paramref name="dir"/> is created if it does not exist.
+	/// </summary>
+	/// <remarks>Method does not throw exceptions unless provided directory path is invalid.</remarks>
+	public static void EnsureDirectoryExists(string? dir)
+	{
+		// If root is given, then do not worry.
+		if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
 		{
-			if (Directory.Exists(dirPath))
+			Directory.CreateDirectory(dir);
+		}
+	}
+
+	public static void EnsureFileExists(string filePath)
+	{
+		if (!File.Exists(filePath))
+		{
+			EnsureContainingDirectoryExists(filePath);
+
+			File.Create(filePath)?.Dispose();
+		}
+	}
+
+	public static void OpenFolderInFileExplorer(string dirPath)
+	{
+		if (Directory.Exists(dirPath))
+		{
+			// RuntimeInformation.OSDescription on WSL2 reports a string like:
+			// 'Linux 5.10.102.1-microsoft-standard-WSL2 #1 SMP Wed Mar 2 00:30:59 UTC 2022'
+			if (!RuntimeInformation.OSDescription.ToString(CultureInfo.InvariantCulture).Contains("WSL2"))
 			{
-				using Process process = Process.Start(new ProcessStartInfo
+				using var process = Process.Start(new ProcessStartInfo
 				{
 					FileName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
 						? "explorer.exe"
 						: (RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
 							? "open"
 							: "xdg-open"),
-					Arguments = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? $"\"{dirPath}\"" : dirPath,
+					ArgumentList = { dirPath },
 					CreateNoWindow = true
 				});
 			}
 		}
+	}
 
-		public static async Task OpenBrowserAsync(string url)
+	public static Task OpenBrowserAsync(string url)
+	{
+		if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+		    (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
 		{
-			if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-			{
-				// If no associated application/json MimeType is found xdg-open opens retrun error
-				// but it tries to open it anyway using the console editor (nano, vim, other..)
-				await EnvironmentHelpers.ShellExecAsync($"xdg-open {url}", waitForExit: false).ConfigureAwait(false);
-			}
-			else
-			{
-				using Process process = Process.Start(new ProcessStartInfo
-				{
-					FileName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? url : "open",
-					Arguments = RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? $"-e {url}" : "",
-					CreateNoWindow = true,
-					UseShellExecute = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-				});
-			}
+			throw new ArgumentException("URL must be a valid HTTP or HTTPS address.", nameof(url));
 		}
 
-		public static void CopyFilesRecursively(DirectoryInfo source, DirectoryInfo target)
-		{
-			foreach (DirectoryInfo dir in source.GetDirectories())
-			{
-				CopyFilesRecursively(dir, target.CreateSubdirectory(dir.Name));
-			}
+		var safeUrl = uri.ToString();
 
-			foreach (FileInfo file in source.GetFiles())
+		if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+		{
+			// If no associated application/json MimeType is found xdg-open opens return error
+			// but it tries to open it anyway using the console editor (nano, vim, other..)
+			using var process = Process.Start(new ProcessStartInfo("xdg-open")
 			{
-				file.CopyTo(Path.Combine(target.FullName, file.Name));
-			}
+				ArgumentList = { safeUrl },
+				UseShellExecute = false,
+				CreateNoWindow	= true
+			});
+		}
+		else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+		{
+			using var process = Process.Start(new ProcessStartInfo("open")
+			{
+				ArgumentList = { safeUrl },
+				UseShellExecute = false,
+				CreateNoWindow	= true
+			});
+		}
+		else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+		{
+			using var process = Process.Start(new ProcessStartInfo
+			{
+				FileName = url,
+				CreateNoWindow = true,
+				UseShellExecute = true
+			});
+		}
+		else
+		{
+			throw new PlatformNotSupportedException("Cannot open browser on this platform.");
 		}
 
-		public static void CreateOrOverwriteFile(string path)
-		{
-			using var _ = File.Create(path);
-		}
+		return Task.CompletedTask;
 	}
 }

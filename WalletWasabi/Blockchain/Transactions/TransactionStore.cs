@@ -1,396 +1,224 @@
-using NBitcoin;
-using System;
-using System.Collections.Generic;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
-using System.Linq;
-using System.Threading.Tasks;
-using WalletWasabi.Blockchain.Transactions.Operations;
-using WalletWasabi.Helpers;
-using WalletWasabi.Io;
-using WalletWasabi.Logging;
+using WalletWasabi.Storages;
 
-namespace WalletWasabi.Blockchain.Transactions
+namespace WalletWasabi.Blockchain.Transactions;
+
+public class TransactionStore : IDisposable
 {
-	public class TransactionStore
+	public TransactionStore(string workFolderPath, Network network)
 	{
-		public string WorkFolderPath { get; private set; }
-		public Network Network { get; private set; }
+		_dataSource = workFolderPath;
+		bool useInMemoryDatabase = _dataSource == SqliteStorageHelper.InMemoryDatabase;
 
-		private Dictionary<uint256, SmartTransaction> Transactions { get; set; }
-		private object TransactionsLock { get; set; }
-		private MutexIoManager TransactionsFileManager { get; set; }
-
-		private List<ITxStoreOperation> Operations { get; } = new List<ITxStoreOperation>();
-		private object OperationsLock { get; } = new object();
-
-		public async Task InitializeAsync(string workFolderPath, Network network, string operationName)
+		if (!useInMemoryDatabase)
 		{
-			using (BenchmarkLogger.Measure(operationName: operationName))
+			IoHelpers.EnsureDirectoryExists(_dataSource);
+			_dataSource = Path.Combine(_dataSource, "Transactions.sqlite");
+		}
+
+		_sqliteStorage = TransactionSqliteStorage.FromFile(dataSource: _dataSource, network);
+	}
+
+	private readonly string _dataSource;
+	private readonly Lock _sqliteStorageLock = new();
+
+	/// <remarks>Guarded by <see cref="_sqliteStorageLock"/>.</remarks>
+	private readonly TransactionSqliteStorage _sqliteStorage;
+
+	/// <remarks>Guarded by <see cref="_sqliteStorageLock"/>.</remarks>
+	private Dictionary<uint256, SmartTransaction> Transactions { get; } = new();
+
+	public Task InitializeAsync(CancellationToken cancellationToken)
+	{
+		lock (_sqliteStorageLock)
+		{
+			InitializeTransactionsNoLock(cancellationToken);
+		}
+
+		return Task.CompletedTask;
+	}
+
+	private void InitializeTransactionsNoLock(CancellationToken cancellationToken)
+	{
+		try
+		{
+			lock (_sqliteStorageLock)
 			{
-				WorkFolderPath = Guard.NotNullOrEmptyOrWhitespace(nameof(workFolderPath), workFolderPath, trim: true);
-				Network = Guard.NotNull(nameof(network), network);
-
-				Transactions = new Dictionary<uint256, SmartTransaction>();
-				TransactionsLock = new object();
-
-				var fileName = Path.Combine(WorkFolderPath, "Transactions.dat");
-				var transactionsFilePath = Path.Combine(WorkFolderPath, fileName);
-				TransactionsFileManager = new MutexIoManager(transactionsFilePath);
-
-				using (await TransactionsFileManager.Mutex.LockAsync().ConfigureAwait(false))
+				int i = 0;
+				foreach (SmartTransaction tx in _sqliteStorage.GetAll(cancellationToken).OrderByBlockchain())
 				{
-					IoHelpers.EnsureDirectoryExists(WorkFolderPath);
+					i++;
 
-					if (!TransactionsFileManager.Exists())
+					if (i % 100 == 0)
 					{
-						await SerializeAllTransactionsNoMutexAsync().ConfigureAwait(false);
+						cancellationToken.ThrowIfCancellationRequested();
 					}
 
-					await InitializeTransactionsNoMutexAsync().ConfigureAwait(false);
+					TryAddOrUpdateNoLockNoSerialization(tx);
 				}
 			}
 		}
-
-		private async Task InitializeTransactionsNoMutexAsync()
+		catch (Exception ex) when (ex is not OperationCanceledException)
 		{
-			try
+			// We found a corrupted entry. Stop here.
+			// Do not try to automatically correct the data, because the internal data structures are throwing events that may confuse the consumers of those events.
+			Logger.LogError($"'{_dataSource}' database got corrupted. Clearing it...");
+			_sqliteStorage.Clear();
+			throw;
+		}
+	}
+
+	private bool TryAddOrUpdateNoLockNoSerialization(SmartTransaction tx)
+	{
+		uint256 hash = tx.GetHash();
+
+		if (Transactions.TryAdd(hash, tx))
+		{
+			return true;
+		}
+		else
+		{
+			if (Transactions[hash].TryUpdate(tx))
 			{
-				IoHelpers.EnsureFileExists(TransactionsFileManager.FilePath);
+				return true;
+			}
+		}
 
-				var allLines = await TransactionsFileManager.ReadAllLinesAsync().ConfigureAwait(false);
-				var allTransactions = allLines
-					.Select(x => SmartTransaction.FromLine(x, Network))
-					.OrderByBlockchain();
+		return false;
+	}
 
-				var added = false;
-				var updated = false;
-				lock (TransactionsLock)
+	public bool TryAdd(SmartTransaction tx)
+	{
+		lock (_sqliteStorageLock)
+		{
+			if (Transactions.TryAdd(tx.GetHash(), tx))
+			{
+				if (_sqliteStorage.BulkInsert(tx) == 0)
 				{
-					foreach (var tx in allTransactions)
-					{
-						var res = TryAddOrUpdateNoLockNoSerialization(tx);
-						if (res.isAdded)
-						{
-							added = true;
-						}
-						if (res.isUpdated)
-						{
-							updated = true;
-						}
-					}
+					throw new UnreachableException($"Transaction '{tx.GetHash()}' was added in memory but not in database.");
 				}
 
-				if (added || updated)
-				{
-					// Another process worked into the file and appended the same transaction into it.
-					// In this case we correct the file by serializing the unique set.
-					await SerializeAllTransactionsNoMutexAsync().ConfigureAwait(false);
-				}
-			}
-			catch
-			{
-				// We found a corrupted entry. Stop here.
-				// Delete the currupted file.
-				// Do not try to autocorrect, because the internal data structures are throwing events that may confuse the consumers of those events.
-				Logger.LogError($"{TransactionsFileManager.FileNameWithoutExtension} file got corrupted. Deleting it...");
-				TransactionsFileManager.DeleteMe();
-				throw;
-			}
-		}
-
-		#region Modifiers
-
-		public (bool isAdded, bool isUpdated) TryAddOrUpdate(SmartTransaction tx)
-		{
-			(bool isAdded, bool isUpdated) ret;
-
-			lock (TransactionsLock)
-			{
-				ret = TryAddOrUpdateNoLockNoSerialization(tx);
-			}
-
-			if (ret.isAdded)
-			{
-				_ = TryAppendToFileAsync(tx);
-			}
-
-			if (ret.isUpdated)
-			{
-				_ = TryUpdateFileAsync(tx);
-			}
-
-			return ret;
-		}
-
-		private (bool isAdded, bool isUpdated) TryAddOrUpdateNoLockNoSerialization(SmartTransaction tx)
-		{
-			var hash = tx.GetHash();
-
-			if (Transactions.TryAdd(hash, tx))
-			{
-				return (true, false);
-			}
-			else
-			{
-				if (Transactions[hash].TryUpdate(tx))
-				{
-					return (false, true);
-				}
-				else
-				{
-					return (false, false);
-				}
-			}
-		}
-
-		public bool TryUpdate(SmartTransaction tx)
-		{
-			bool ret;
-			lock (TransactionsLock)
-			{
-				ret = TryUpdateNoLockNoSerialization(tx);
-			}
-
-			if (ret)
-			{
-				_ = TryUpdateFileAsync(tx);
-			}
-
-			return ret;
-		}
-
-		private bool TryUpdateNoLockNoSerialization(SmartTransaction tx)
-		{
-			var hash = tx.GetHash();
-
-			if (Transactions.TryGetValue(hash, out SmartTransaction found))
-			{
-				return found.TryUpdate(tx);
+				return true;
 			}
 
 			return false;
 		}
+	}
 
-		public bool TryRemove(uint256 hash, out SmartTransaction stx)
+	public bool TryAddOrUpdate(SmartTransaction tx)
+	{
+		lock (_sqliteStorageLock)
 		{
-			bool isRemoved;
+			bool result = TryAddOrUpdateNoLockNoSerialization(tx);
 
-			lock (TransactionsLock)
+			if (result)
 			{
-				isRemoved = Transactions.Remove(hash, out stx);
-			}
-
-			if (isRemoved)
-			{
-				_ = TryRemoveFromFileAsync(hash);
-			}
-
-			return isRemoved;
-		}
-
-		#endregion Modifiers
-
-		#region Accessors
-
-		public bool TryGetTransaction(uint256 hash, out SmartTransaction sameStx)
-		{
-			lock (TransactionsLock)
-			{
-				return Transactions.TryGetValue(hash, out sameStx);
-			}
-		}
-
-		public IEnumerable<SmartTransaction> GetTransactions()
-		{
-			lock (TransactionsLock)
-			{
-				return Transactions.Values.OrderByBlockchain().ToList();
-			}
-		}
-
-		public IEnumerable<uint256> GetTransactionHashes()
-		{
-			lock (TransactionsLock)
-			{
-				return Transactions.Values.OrderByBlockchain().Select(x => x.GetHash()).ToList();
-			}
-		}
-
-		public bool IsEmpty()
-		{
-			lock (TransactionsLock)
-			{
-				return !Transactions.Any();
-			}
-		}
-
-		public bool Contains(uint256 hash)
-		{
-			lock (TransactionsLock)
-			{
-				return Transactions.ContainsKey(hash);
-			}
-		}
-
-		#endregion Accessors
-
-		#region Serialization
-
-		private async Task SerializeAllTransactionsNoMutexAsync()
-		{
-			List<SmartTransaction> transactionsClone;
-			lock (TransactionsLock)
-			{
-				transactionsClone = Transactions.Values.ToList();
-			}
-
-			await TransactionsFileManager.WriteAllLinesAsync(transactionsClone.ToBlockchainOrderedLines()).ConfigureAwait(false);
-		}
-
-		private async Task TryAppendToFileAsync(params SmartTransaction[] transactions)
-			=> await TryAppendToFileAsync(transactions as IEnumerable<SmartTransaction>).ConfigureAwait(false);
-
-		private async Task TryAppendToFileAsync(IEnumerable<SmartTransaction> transactions)
-			=> await TryCommitToFileAsync(new Append(transactions)).ConfigureAwait(false);
-
-		private async Task TryRemoveFromFileAsync(params uint256[] transactionIds)
-			=> await TryRemoveFromFileAsync(transactionIds as IEnumerable<uint256>).ConfigureAwait(false);
-
-		private async Task TryRemoveFromFileAsync(IEnumerable<uint256> transactionIds)
-			=> await TryCommitToFileAsync(new Remove(transactionIds)).ConfigureAwait(false);
-
-		private async Task TryUpdateFileAsync(params SmartTransaction[] transactions)
-			=> await TryUpdateFileAsync(transactions as IEnumerable<SmartTransaction>).ConfigureAwait(false);
-
-		private async Task TryUpdateFileAsync(IEnumerable<SmartTransaction> transactions)
-			=> await TryCommitToFileAsync(new Update(transactions)).ConfigureAwait(false);
-
-		private async Task TryCommitToFileAsync(ITxStoreOperation operation)
-		{
-			try
-			{
-				if (operation is null || operation.IsEmpty)
+				if (_sqliteStorage.BulkInsert(new SmartTransaction[] { tx }, upsert: true) == 0)
 				{
-					return;
+					throw new UnreachableException($"Transaction '{tx.GetHash()}' was update in memory but not in database.");
 				}
+			}
 
-				// Make sure that only one call can continue.
-				lock (OperationsLock)
+			return result;
+		}
+	}
+
+	public bool TryUpdate(SmartTransaction tx)
+	{
+		bool updated = false;
+
+		lock (_sqliteStorageLock)
+		{
+			if (Transactions.TryGetValue(tx.GetHash(), out var foundTx))
+			{
+				if (foundTx.TryUpdate(tx))
 				{
-					var isRunning = Operations.Any();
-					Operations.Add(operation);
-					if (isRunning)
+					updated = true;
+
+					if (_sqliteStorage.BulkUpdate(tx) == 0)
 					{
-						return;
-					}
-				}
-
-				// Wait until the operation list calms down.
-				IEnumerable<ITxStoreOperation> operationsToExecute;
-				while (true)
-				{
-					var count = Operations.Count;
-
-					await Task.Delay(100).ConfigureAwait(false);
-
-					lock (OperationsLock)
-					{
-						if (count == Operations.Count)
-						{
-							// Merge operations.
-							operationsToExecute = OperationMerger.Merge(Operations).ToList();
-							Operations.Clear();
-							break;
-						}
-					}
-				}
-
-				using (await TransactionsFileManager.Mutex.LockAsync().ConfigureAwait(false))
-				{
-					foreach (ITxStoreOperation op in operationsToExecute)
-					{
-						if (op is Append appendOperation)
-						{
-							var toAppends = appendOperation.Transactions;
-
-							try
-							{
-								await TransactionsFileManager.AppendAllLinesAsync(toAppends.ToBlockchainOrderedLines()).ConfigureAwait(false);
-							}
-							catch
-							{
-								await SerializeAllTransactionsNoMutexAsync().ConfigureAwait(false);
-							}
-						}
-						else if (op is Remove removeOperation)
-						{
-							var toRemoves = removeOperation.Transactions;
-
-							string[] allLines = await TransactionsFileManager.ReadAllLinesAsync().ConfigureAwait(false);
-							var toSerialize = new List<string>();
-							foreach (var line in allLines)
-							{
-								var startsWith = false;
-								foreach (var toRemoveString in toRemoves.Select(x => x.ToString()))
-								{
-									startsWith = startsWith || line.StartsWith(toRemoveString, StringComparison.Ordinal);
-								}
-
-								if (!startsWith)
-								{
-									toSerialize.Add(line);
-								}
-							}
-
-							try
-							{
-								await TransactionsFileManager.WriteAllLinesAsync(toSerialize).ConfigureAwait(false);
-							}
-							catch
-							{
-								await SerializeAllTransactionsNoMutexAsync().ConfigureAwait(false);
-							}
-						}
-						else if (op is Update updateOperation)
-						{
-							var toUpdates = updateOperation.Transactions;
-
-							string[] allLines = await TransactionsFileManager.ReadAllLinesAsync().ConfigureAwait(false);
-							IEnumerable<SmartTransaction> allTransactions = allLines.Select(x => SmartTransaction.FromLine(x, Network));
-							var toSerialize = new List<SmartTransaction>();
-
-							foreach (SmartTransaction tx in allTransactions)
-							{
-								var txsToUpdateWith = toUpdates.Where(x => x == tx);
-								foreach (var txToUpdateWith in txsToUpdateWith)
-								{
-									tx.TryUpdate(txToUpdateWith);
-								}
-								toSerialize.Add(tx);
-							}
-
-							try
-							{
-								await TransactionsFileManager.WriteAllLinesAsync(toSerialize.ToBlockchainOrderedLines()).ConfigureAwait(false);
-							}
-							catch
-							{
-								await SerializeAllTransactionsNoMutexAsync().ConfigureAwait(false);
-							}
-						}
-						else
-						{
-							throw new NotSupportedException();
-						}
+						throw new UnreachableException($"Transaction '{tx.GetHash()}' was update in memory but not in database.");
 					}
 				}
 			}
-			catch (Exception ex)
+		}
+
+		return updated;
+	}
+
+	public bool TryRemove(uint256 hash, [NotNullWhen(true)] out SmartTransaction? tx)
+	{
+		bool isRemoved = false;
+
+		lock (_sqliteStorageLock)
+		{
+			if (Transactions.Remove(hash, out tx))
 			{
-				Logger.LogError(ex);
+				isRemoved = true;
+
+				if (!_sqliteStorage.TryRemove(hash, out _))
+				{
+					throw new UnreachableException($"Transaction '{tx.GetHash()}' was removed from memory but not from database.");
+				}
 			}
 		}
 
-		#endregion Serialization
+		return isRemoved;
+	}
+
+	public bool TryGetTransaction(uint256 hash, [NotNullWhen(true)] out SmartTransaction? tx)
+	{
+		lock (_sqliteStorageLock)
+		{
+			return Transactions.TryGetValue(hash, out tx);
+		}
+	}
+
+	public List<SmartTransaction> GetTransactions()
+	{
+		lock (_sqliteStorageLock)
+		{
+			return Transactions.Values.OrderByBlockchain().ToList();
+		}
+	}
+
+	public bool TryGetFirstSeenTransaction([NotNullWhen(true)] out SmartTransaction? stx)
+	{
+		lock (_sqliteStorageLock)
+		{
+			stx = Transactions.Values.OrderByBlockchain().FirstOrDefault();
+			return stx != null;
+		}
+	}
+
+	public List<uint256> GetTransactionHashes()
+	{
+		lock (_sqliteStorageLock)
+		{
+			return Transactions.Values.OrderByBlockchain().Select(x => x.GetHash()).ToList();
+		}
+	}
+
+	public bool IsEmpty()
+	{
+		lock (_sqliteStorageLock)
+		{
+			return Transactions.Count == 0;
+		}
+	}
+
+	public bool Contains(uint256 hash)
+	{
+		lock (_sqliteStorageLock)
+		{
+			return Transactions.ContainsKey(hash);
+		}
+	}
+
+	public void Dispose()
+	{
+		_sqliteStorage.Dispose();
 	}
 }

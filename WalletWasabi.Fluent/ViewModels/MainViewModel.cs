@@ -1,79 +1,234 @@
+using System.Reactive.Concurrency;
+using System.Reactive.Linq;
+using System.Reactive.Subjects;
+using System.Threading.Tasks;
+using Avalonia.Controls;
 using NBitcoin;
-using ReactiveUI;
-using System.Reactive;
-using WalletWasabi.Gui.ViewModels;
-using WalletWasabi.Fluent.ViewModels.Dialogs;
-using Global = WalletWasabi.Gui.Global;
+using WalletWasabi.Fluent.Extensions;
+using WalletWasabi.Fluent.Helpers;
+using WalletWasabi.Fluent.Infrastructure;
+using WalletWasabi.Fluent.ViewModels.Dialogs.Base;
+using WalletWasabi.Services;
+using WalletWasabi.Fluent.ViewModels.Dialogs.ReleaseHighlights;
+using WalletWasabi.Fluent.ViewModels.NavBar;
+using WalletWasabi.Fluent.ViewModels.Navigation;
+using WalletWasabi.Fluent.ViewModels.SearchBar;
+using WalletWasabi.Fluent.ViewModels.SearchBar.Sources;
+using WalletWasabi.Fluent.ViewModels.Settings;
+using WalletWasabi.Fluent.ViewModels.StatusIcon;
+using WalletWasabi.Fluent.ViewModels.Wallets;
+using WalletWasabi.Fluent.ViewModels.Wallets.Notifications;
+using WalletWasabi.Helpers;
+using System.Diagnostics.CodeAnalysis;
 
-namespace WalletWasabi.Fluent.ViewModels
+namespace WalletWasabi.Fluent.ViewModels;
+
+[AppLifetime]
+public partial class MainViewModel : ViewModelBase
 {
-	public class MainViewModel : ViewModelBase, IScreen, IDialogHost
+	[AutoNotify] private string _title = "Wasabi Wallet";
+	[AutoNotify] private WindowState _windowState;
+	[AutoNotify] private bool _isOobeBackgroundVisible;
+	[AutoNotify] private bool _isCoinJoinActive;
+
+	public MainViewModel(UiContext uiContext) : base(uiContext)
 	{
-		private readonly Global _global;
-		private StatusBarViewModel _statusBar;
-		private string _title = "Wasabi Wallet";
-		private DialogViewModelBase? _currentDialog;
-		private NavBarViewModel _navBar;
+		UiContext.SetMainViewModel(this);
 
-		public MainViewModel(Global global)
+		ApplyUiConfigWindowState();
+
+		DialogScreen = new DialogScreenViewModel(UiContext);
+		FullScreen = new DialogScreenViewModel(UiContext, NavigationTarget.FullScreen);
+		CompactDialogScreen = new DialogScreenViewModel(UiContext, NavigationTarget.CompactDialogScreen);
+		NavBar = new NavBarViewModel(UiContext);
+		MainScreen = new TargettedNavigationStack(UiContext, NavigationTarget.HomeScreen);
+		UiContext.RegisterNavigation(new NavigationState(UiContext, MainScreen, DialogScreen, FullScreen, CompactDialogScreen, NavBar));
+
+		NavBar.Activate();
+
+		StatusIcon = new StatusIconViewModel(UiContext);
+
+		SettingsPage = new SettingsPageViewModel(UiContext);
+		PrivacyMode = new PrivacyModeViewModel(UiContext, UiContext.ApplicationSettings);
+		Notifications = new WalletNotificationsViewModel(UiContext, NavBar);
+
+		NavigationManager.RegisterType(NavBar);
+
+		this.RegisterAllViewModels(UiContext);
+
+		RxApp.MainThreadScheduler.Schedule(async () => await NavBar.InitialiseAsync());
+
+		this.WhenAnyValue(x => x.WindowState)
+			.Where(state => state != WindowState.Minimized)
+			.ObserveOn(RxApp.MainThreadScheduler)
+			.Subscribe(state => UiContext.ApplicationSettings.WindowState = state);
+
+		IsMainContentEnabled =
+			this.WhenAnyValue(
+					x => x.DialogScreen.IsDialogOpen,
+					x => x.FullScreen.IsDialogOpen,
+					x => x.CompactDialogScreen.IsDialogOpen,
+					(dialogIsOpen, fullScreenIsOpen, compactIsOpen) => !(dialogIsOpen || fullScreenIsOpen || compactIsOpen))
+				.ObserveOn(RxApp.MainThreadScheduler);
+
+		CurrentWallet =
+			this.WhenAnyValue(x => x.MainScreen.CurrentPage)
+				.WhereNotNull()
+				.OfType<WalletViewModel>();
+
+		IsOobeBackgroundVisible = UiContext.ApplicationSettings.Oobe;
+		var isFirstLaunch = !UiContext.WalletRepository.HasWallet || UiContext.ApplicationSettings.Oobe;
+
+		RxApp.MainThreadScheduler.Schedule(async () =>
 		{
-			_global = global;
-			Network = global.Network;
-
-			_currentDialog = null;
-
-			_statusBar = new StatusBarViewModel(global.DataDir, global.Network, global.Config, global.HostedServices, global.BitcoinStore.SmartHeaderChain, global.Synchronizer, global.LegalDocuments);
-
-			var walletManager = new WalletManagerViewModel(this, global.WalletManager, global.UiConfig);
-
-			var addWalletPage = new AddWalletPageViewModel(this, global.WalletManager, global.BitcoinStore, global.Network);
-
-			_navBar = new NavBarViewModel(this, Router, walletManager, addWalletPage);
-		}
-
-		public static MainViewModel? Instance { get; internal set; }
-
-		public RoutingState Router { get; } = new RoutingState();
-
-		public ReactiveCommand<Unit, Unit> GoBack => Router.NavigateBack;
-
-		private Network Network { get; }
-
-		public DialogViewModelBase? CurrentDialog
-		{
-			get => _currentDialog;
-			set => this.RaiseAndSetIfChanged(ref _currentDialog, value);
-		}
-
-		public NavBarViewModel NavBar
-		{
-			get => _navBar;
-			set => this.RaiseAndSetIfChanged(ref _navBar, value);
-		}
-
-		public StatusBarViewModel StatusBar
-		{
-			get => _statusBar;
-			set => this.RaiseAndSetIfChanged(ref _statusBar, value);
-		}
-
-		public string Title
-		{
-			get => _title;
-			internal set => this.RaiseAndSetIfChanged(ref _title, value);
-		}
-
-		public void Initialize()
-		{
-			// Temporary to keep things running without VM modifications.
-			MainWindowViewModel.Instance = new MainWindowViewModel(_global.Network, _global.UiConfig, _global.WalletManager, null!, null!, false);
-
-			StatusBar.Initialize(_global.Nodes.ConnectedNodes);
-
-			if (Network != Network.Main)
+			if (isFirstLaunch)
 			{
-				Title += $" - {Network}";
+				IsOobeBackgroundVisible = true;
+
+				await UiContext.Navigate().To().WelcomePage().GetResultAsync();
+
+				if (UiContext.WalletRepository.HasWallet)
+				{
+					UiContext.ApplicationSettings.Oobe = false;
+					IsOobeBackgroundVisible = false;
+				}
 			}
+
+			await Task.Delay(1000);
+
+			var lastVersionHighlightsDisplayed = UiContext.ApplicationSettings.LastVersionHighlightsDisplayed;
+			UiContext.ApplicationSettings.LastVersionHighlightsDisplayed = Constants.ClientVersion;
+			if (!isFirstLaunch && Constants.ClientVersion > lastVersionHighlightsDisplayed)
+			{
+				await uiContext.Navigate().NavigateDialogAsync(new ReleaseHighlightsDialogViewModel(UiContext),
+					navigationMode: NavigationMode.Clear);
+			}
+		});
+
+		SearchBar = CreateSearchBar();
+
+		NetworkBadgeName =
+			UiContext.ApplicationSettings.Network == Network.Main
+			? ""
+			: UiContext.ApplicationSettings.Network.Name;
+	}
+
+	public IObservable<bool> IsMainContentEnabled { get; }
+
+	public string NetworkBadgeName { get; }
+
+	public IObservable<WalletViewModel> CurrentWallet { get; }
+
+	public TargettedNavigationStack MainScreen { get; }
+
+	public SearchBarViewModel SearchBar { get; }
+
+	public DialogScreenViewModel DialogScreen { get; }
+	public DialogScreenViewModel FullScreen { get; }
+	public DialogScreenViewModel CompactDialogScreen { get; }
+	public NavBarViewModel NavBar { get; }
+	public StatusIconViewModel StatusIcon { get; }
+	public SettingsPageViewModel SettingsPage { get; }
+	public PrivacyModeViewModel PrivacyMode { get; }
+	public WalletNotificationsViewModel Notifications { get; }
+
+	public bool IsDialogOpen()
+	{
+		return DialogScreen.IsDialogOpen
+			   || FullScreen.IsDialogOpen
+			   || CompactDialogScreen.IsDialogOpen;
+	}
+
+	public void ShowDialogAlert()
+	{
+		if (CompactDialogScreen.IsDialogOpen)
+		{
+			CompactDialogScreen.ShowAlert = false;
+			CompactDialogScreen.ShowAlert = true;
+			return;
 		}
+
+		if (DialogScreen.IsDialogOpen)
+		{
+			DialogScreen.ShowAlert = false;
+			DialogScreen.ShowAlert = true;
+			return;
+		}
+
+		if (FullScreen.IsDialogOpen)
+		{
+			FullScreen.ShowAlert = false;
+			FullScreen.ShowAlert = true;
+		}
+	}
+
+	public void ClearStacks()
+	{
+		MainScreen.Clear();
+		DialogScreen.Clear();
+		FullScreen.Clear();
+		CompactDialogScreen.Clear();
+	}
+
+	public void Initialize()
+	{
+		UiContext.WalletRepository.Wallets
+			.Connect()
+			.FilterOnObservable(x => x.IsCoinjoinRunning)
+			.ToCollection()
+			.Select(x => x.Count != 0)
+			.BindTo(this, x => x.IsCoinJoinActive);
+
+		UiContext.Services.EventBus.AsObservable<RpcStatusChanged>()
+			.Select(x => x.Status)
+			.Where(x => !x.IsOk)
+			.Take(1)
+			.ObserveOn(RxApp.MainThreadScheduler)
+			.Subscribe(x => NotificationHelpers.ShowError(
+				"Could not connect to Bitcoin RPC",
+				$"\n>>Click here to verify Bitcoin RPC settings.<<",
+				onClick: () =>
+				{
+					SettingsPage.SelectedTab = 1; // Bitcoin Tab
+					_ = SettingsPage.Activate();
+				}));
+
+		Notifications.StartListening();
+
+		if (UiContext.ApplicationSettings.Network != Network.Main)
+		{
+			Title += $" - {UiContext.ApplicationSettings.Network}";
+		}
+	}
+
+	public void ApplyUiConfigWindowState()
+	{
+		WindowState = UiContext.ApplicationSettings.WindowState;
+	}
+
+	[SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Same lifecycle as the application. Won't be disposed separately.")]
+	private SearchBarViewModel CreateSearchBar()
+	{
+		// This subject is created to solve the circular dependency between the sources and SearchBarViewModel
+		var querySubject = new Subject<string>();
+
+		var source = new CompositeSearchSource(
+			new ActionsSearchSource(UiContext, querySubject),
+			new SettingsSearchSource(UiContext, querySubject),
+			new TransactionsSearchSource(NavBar, querySubject),
+			UiContext.EditableSearchSource);
+
+		var searchBar = new SearchBarViewModel(source);
+
+		var queries = searchBar
+			.WhenAnyValue(a => a.SearchText)
+			.WhereNotNull();
+
+		UiContext.EditableSearchSource.SetQueries(queries);
+
+		queries
+			.Subscribe(querySubject);
+
+		return searchBar;
 	}
 }

@@ -2,57 +2,54 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using WalletWasabi.Helpers;
 
-namespace System
+namespace WalletWasabi.Helpers;
+
+/// <summary>
+/// Source: https://stackoverflow.com/a/42117130/2061103
+/// </summary>
+public class EventsAwaiter<TEventArgs>
 {
-	/// <summary>
-	/// Source: https://stackoverflow.com/a/42117130/2061103
-	/// </summary>
-	public class EventsAwaiter<TEventArgs>
+	public EventsAwaiter(Action<EventHandler<TEventArgs>> subscribe, Action<EventHandler<TEventArgs>> unsubscribe, int count)
 	{
-		public EventsAwaiter(Action<EventHandler<TEventArgs>> subscribe, Action<EventHandler<TEventArgs>> unsubscribe, int count)
+		Guard.MinimumAndNotNull(nameof(count), count, smallest: 0);
+
+		var eventsArrived = new List<TaskCompletionSource<TEventArgs>>(count);
+
+		for (int i = 0; i < count; i++)
 		{
-			Guard.MinimumAndNotNull(nameof(count), count, 0);
-			Lock = new object();
-			var eventsArrived = new List<TaskCompletionSource<TEventArgs>>(count);
-			for (int i = 0; i < count; i++)
-			{
-				eventsArrived.Add(new TaskCompletionSource<TEventArgs>());
-			}
-			EventsArrived = eventsArrived;
-			subscribe(Subscription);
-			Unsubscribe = unsubscribe;
+			eventsArrived.Add(new TaskCompletionSource<TEventArgs>());
 		}
 
-		protected IEnumerable<TaskCompletionSource<TEventArgs>> EventsArrived { get; }
+		EventsArrived = eventsArrived;
+		Tasks = EventsArrived.Select(x => x.Task).ToArray();
+		_unsubscribe = unsubscribe;
 
-		private Action<EventHandler<TEventArgs>> Unsubscribe { get; }
-		private object Lock { get; }
+		subscribe(SubscriptionEventHandler);
+	}
 
-		protected IEnumerable<Task<TEventArgs>> Tasks => EventsArrived.Select(x => x.Task);
+	/// <remarks>Guards <see cref="EventsArrived"/>.</remarks>
+	private readonly Lock _lock = new();
 
-		private EventHandler<TEventArgs> Subscription => (s, e) =>
+	/// <remarks>Guarded by <see cref="_lock"/>.</remarks>
+	protected IReadOnlyList<TaskCompletionSource<TEventArgs>> EventsArrived { get; }
+
+	protected IReadOnlyList<Task<TEventArgs>> Tasks { get; }
+
+	private readonly Action<EventHandler<TEventArgs>> _unsubscribe;
+
+	private void SubscriptionEventHandler(object? sender, TEventArgs e)
+	{
+		lock (_lock)
 		{
-			lock (Lock)
+			var firstUnfinished = EventsArrived.FirstOrDefault(x => !x.Task.IsCompleted);
+			firstUnfinished?.TrySetResult(e);
+
+			// This is guaranteed to happen only once.
+			if (Tasks.All(x => x.IsCompleted))
 			{
-				var firstUnfinished = EventsArrived.FirstOrDefault(x => !x.Task.IsCompleted);
-				firstUnfinished?.TrySetResult(e);
-
-				if (EventsArrived.All(x => x.Task.IsCompleted))
-				{
-					Unsubscribe(Subscription);
-				}
+				_unsubscribe(SubscriptionEventHandler);
 			}
-		};
-
-		public async Task<IEnumerable<TEventArgs>> WaitAsync(TimeSpan timeout)
-			=> await Task.WhenAll(Tasks).WithAwaitCancellationAsync(timeout).ConfigureAwait(false);
-
-		public async Task<IEnumerable<TEventArgs>> WaitAsync(int millisecondsTimeout)
-			=> await Task.WhenAll(Tasks).WithAwaitCancellationAsync(millisecondsTimeout).ConfigureAwait(false);
-
-		public async Task<IEnumerable<TEventArgs>> WaitAsync(CancellationToken cancel, int waitForGracefulTerminationMilliseconds = 0)
-			=> await Task.WhenAll(Tasks).WithAwaitCancellationAsync(cancel, waitForGracefulTerminationMilliseconds).ConfigureAwait(false);
+		}
 	}
 }

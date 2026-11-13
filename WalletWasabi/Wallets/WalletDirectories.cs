@@ -1,86 +1,71 @@
-using System;
+using NBitcoin;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using WalletWasabi.Helpers;
 
-namespace WalletWasabi.Wallets
+namespace WalletWasabi.Wallets;
+
+public class WalletDirectories
 {
-	public class WalletDirectories
+	public const string WalletsDirName = "Wallets";
+	public const string WalletFileExtension = "json";
+
+	public WalletDirectories(Network network, string workDir)
 	{
-		public const string WalletsDirName = "Wallets";
-		public const string WalletsBackupDirName = "WalletBackups";
-		private const string WalletFileExtension = "json";
+		Network = network;
+		WalletsDir = network == Network.Main
+			? Path.Combine(workDir, WalletsDirName)
+			: Path.Combine(workDir, WalletsDirName, network.ToString());
 
-		public WalletDirectories(string workDir)
+		Directory.CreateDirectory(WalletsDir);
+	}
+
+	public string WalletsDir { get; }
+
+	public Network Network { get; }
+
+	public string GetWalletFilePaths(string walletName)
+	{
+		if (!walletName.EndsWith($".{WalletFileExtension}", StringComparison.OrdinalIgnoreCase))
 		{
-			WorkDir = Guard.NotNullOrEmptyOrWhitespace(nameof(workDir), workDir, true);
+			walletName = $"{walletName}.{WalletFileExtension}";
+		}
+		return Path.Combine(WalletsDir, walletName);
+	}
 
-			Directory.CreateDirectory(WalletsDir);
-			Directory.CreateDirectory(WalletsBackupDir);
+	public IEnumerable<FileInfo> EnumerateWalletFiles()
+	{
+		var walletsDirInfo = new DirectoryInfo(WalletsDir);
+		var walletsDirExists = walletsDirInfo.Exists;
+		var searchPattern = $"*.{WalletFileExtension}";
+		var searchOption = SearchOption.TopDirectoryOnly;
+		IEnumerable<FileInfo> result;
+
+		
+		if (!walletsDirExists)
+		{
+			return Enumerable.Empty<FileInfo>();
 		}
 
-		public string WorkDir { get; }
-		public string WalletsDir => Path.Combine(WorkDir, WalletsDirName);
-		public string WalletsBackupDir => Path.Combine(WorkDir, WalletsBackupDirName);
+		result = walletsDirInfo.EnumerateFiles(searchPattern, searchOption);
+		
+		return result.OrderByDescending(t => t.LastAccessTimeUtc);
+	}
 
-		public (string walletFilePath, string walletBackupFilePath) GetWalletFilePaths(string walletName)
+	public string GetNextWalletName(string prefix = "Random Wallet")
+	{
+		int i = 1;
+		var walletNames = EnumerateWalletFiles().Select(x => Path.GetFileNameWithoutExtension(x.Name));
+		while (true)
 		{
-			if (!walletName.EndsWith($".{WalletFileExtension}", StringComparison.OrdinalIgnoreCase))
+			var walletName = i == 1 ? prefix : $"{prefix} {i}";
+
+			if (!walletNames.Contains(walletName))
 			{
-				walletName = $"{walletName}.{WalletFileExtension}";
-			}
-			return (Path.Combine(WalletsDir, walletName), Path.Combine(WalletsBackupDir, walletName));
-		}
-
-		public IEnumerable<FileInfo> EnumerateWalletFiles(bool includeBackupDir = false)
-		{
-			var walletsDirInfo = new DirectoryInfo(WalletsDir);
-			var walletsDirExists = walletsDirInfo.Exists;
-			var searchPattern = $"*.{WalletFileExtension}";
-			var searchOption = SearchOption.TopDirectoryOnly;
-			IEnumerable<FileInfo> result = null;
-
-			if (includeBackupDir)
-			{
-				var backupsDirInfo = new DirectoryInfo(WalletsBackupDir);
-				if (!walletsDirExists && !backupsDirInfo.Exists)
-				{
-					return Enumerable.Empty<FileInfo>();
-				}
-
-				result = walletsDirInfo
-					.EnumerateFiles(searchPattern, searchOption)
-					.Concat(backupsDirInfo.EnumerateFiles(searchPattern, searchOption));
-			}
-			else
-			{
-				if (!walletsDirExists)
-				{
-					return Enumerable.Empty<FileInfo>();
-				}
-
-				result = walletsDirInfo.EnumerateFiles(searchPattern, searchOption);
+				return walletName;
 			}
 
-			return result.OrderByDescending(t => t.LastAccessTimeUtc);
-		}
-
-		public string GetNextWalletName(string prefix = "Random Wallet")
-		{
-			int i = 1;
-			var walletNames = EnumerateWalletFiles().Select(x => Path.GetFileNameWithoutExtension(x.Name));
-			while (true)
-			{
-				var walletName = i == 1 ? prefix : $"{prefix} {i}";
-
-				if (!walletNames.Contains(walletName))
-				{
-					return walletName;
-				}
-
-				i++;
-			}
+			i++;
 		}
 	}
 }

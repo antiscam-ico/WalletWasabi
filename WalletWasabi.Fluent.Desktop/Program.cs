@@ -1,240 +1,282 @@
+using System.Diagnostics;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Dialogs;
-using Avalonia.ReactiveUI;
-using Avalonia.Threading;
-using Splat;
-using System;
 using System.IO;
+using System.Reactive;
+using System.Reactive.Concurrency;
 using System.Runtime.InteropServices;
-using System.Threading.Tasks;
-using WalletWasabi.Fluent.ViewModels;
-using WalletWasabi.Gui;
-using WalletWasabi.Gui.CommandLine;
-using WalletWasabi.Gui.CrashReport;
-using WalletWasabi.Gui.ViewModels;
-using WalletWasabi.Helpers;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Threading;
+using ReactiveUI;
+using System.Linq;
+using WalletWasabi.Fluent.CrashReport;
+using WalletWasabi.Fluent.Helpers;
 using WalletWasabi.Logging;
-using WalletWasabi.Services.Terminate;
-using WalletWasabi.Wallets;
+using WalletWasabi.Models;
+using WalletWasabi.Fluent.Desktop.Extensions;
+using System.Net.Sockets;
+using System.Collections.ObjectModel;
+using LogLevel = WalletWasabi.Logging.LogLevel;
+using System.Threading;
+using WalletWasabi.Services;
+using ReactiveUI.Avalonia;
+using WalletWasabi.Client;
+using WalletWasabi.Client.Configuration;
+using WalletWasabi.Fluent.Configuration;
 
-namespace WalletWasabi.Fluent.Desktop
+namespace WalletWasabi.Fluent.Desktop;
+
+public class Program
 {
-	public class Program
+	private static int IsShuttingDownFlag;
+
+	internal static bool IsShuttingDown => Volatile.Read(ref IsShuttingDownFlag) == 1;
+
+	internal static bool IsDbusMenuShutdownException(Exception exception)
 	{
-		private static Global Global;
-
-		// This is only needed to pass CrashReporter to AppMainAsync otherwise it could be a local variable in Main().
-		private static CrashReporter CrashReporter = new CrashReporter();
-
-		private static TerminateService TerminateService = new TerminateService(TerminateApplicationAsync);
-
-		// Initialization code. Don't use any Avalonia, third-party APIs or any
-		// SynchronizationContext-reliant code before AppMain is called: things aren't initialized
-		// yet and stuff might break.
-		public static void Main(string[] args)
+		if (exception is not NullReferenceException)
 		{
-			bool runGui = false;
-			Exception? appException = null;
+			return false;
+		}
+
+		var declaringType = exception.TargetSite?.DeclaringType?.FullName;
+		if (declaringType?.Contains("Avalonia.FreeDesktop.DBusMenuExporter", StringComparison.Ordinal) == true)
+		{
+			return true;
+		}
+
+		return exception.StackTrace?.Contains("Avalonia.FreeDesktop.DBusMenuExporter", StringComparison.Ordinal) == true;
+	}
+
+	/// <remarks>
+	/// Initialization code. Don't use any Avalonia, third-party APIs or any SynchronizationContext-reliant code before AppMain is called:
+	/// things aren't initialized yet and stuff might break.
+	/// </remarks>
+	/// <seealso cref="SingleInstanceChecker"/>
+	[STAThread]
+	public static int Main(string[] args)
+	{
+		// Crash reporting must be before the "single instance checking".
+		if (CrashReporter.TryGetExceptionFromCliArgs(args, out var exceptionToShow))
+		{
+			Logger.Configure(Path.Combine(Config.DataDir, "Logs.txt"), LogLevel.Info);
 
 			try
 			{
-				Global = CreateGlobal();
-				Locator.CurrentMutable.RegisterConstant(Global);
-				Locator.CurrentMutable.RegisterConstant(CrashReporter);
-
-				//Platform.BaseDirectory = Path.Combine(Global.DataDir, "Gui");
-				AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
-				TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
-
-				runGui = ProcessCliCommands(args);
-
-				if (CrashReporter.IsReport)
-				{
-					StartCrashReporter(args);
-					return;
-				}
-
-				if (runGui)
-				{
-					Logger.LogSoftwareStarted("Wasabi GUI");
-
-					BuildAvaloniaApp()
-						.AfterSetup(_ => AppMainAsync(args))
-						.StartWithClassicDesktopLifetime(args);
-				}
+				// Show the exception.
+				BuildCrashReporterApp(exceptionToShow).StartWithClassicDesktopLifetime(args);
+				return 1;
 			}
 			catch (Exception ex)
 			{
-				appException = ex;
-				throw;
-			}
-
-			TerminateAppAndHandleException(appException, runGui);
-		}
-
-		private static Global CreateGlobal()
-		{
-			string dataDir = EnvironmentHelpers.GetDataDir(Path.Combine("WalletWasabi", "Client"));
-			Directory.CreateDirectory(dataDir);
-			string torLogsFile = Path.Combine(dataDir, "TorLogs.txt");
-
-			var uiConfig = new UiConfig(Path.Combine(dataDir, "UiConfig.json"));
-			uiConfig.LoadOrCreateDefaultFile();
-			var config = new Config(Path.Combine(dataDir, "Config.json"));
-			config.LoadOrCreateDefaultFile();
-			config.CorrectMixUntilAnonymitySet();
-			var walletManager = new WalletManager(config.Network, new WalletDirectories(dataDir));
-
-			return new Global(dataDir, torLogsFile, config, uiConfig, walletManager);
-		}
-
-		private static bool ProcessCliCommands(string[] args)
-		{
-			var daemon = new Daemon(Global, TerminateService);
-			var interpreter = new CommandInterpreter(Console.Out, Console.Error);
-			var executionTask = interpreter.ExecuteCommandsAsync(
-				args,
-				new MixerCommand(daemon),
-				new PasswordFinderCommand(Global.WalletManager),
-				new CrashReportCommand(CrashReporter));
-			return executionTask.GetAwaiter().GetResult();
-		}
-
-		private static async void AppMainAsync(string[] args)
-		{
-			try
-			{
-				await Global.InitializeNoWalletAsync(TerminateService);
-
-				MainViewModel.Instance.Initialize();
-
-				Dispatcher.UIThread.Post(GC.Collect);
-			}
-			catch (Exception ex)
-			{
-				// There is no other way to stop the creation of the WasabiWindow, we have to exit the application here instead of return to Main.
-				TerminateAppAndHandleException(ex, true);
-			}
-		}
-
-		/// <summary>
-		/// This is a helper method until the creation of the window in AppMainAsync cannot be aborted without Environment.Exit().
-		/// </summary>
-		private static void TerminateAppAndHandleException(Exception? ex, bool runGui)
-		{
-			if (ex is OperationCanceledException)
-			{
-				Logger.LogDebug(ex);
-			}
-			else if (ex is { })
-			{
+				// If anything happens here just log it and exit.
 				Logger.LogCritical(ex);
-				if (runGui)
-				{
-					CrashReporter.SetException(ex);
-				}
+				return 1;
 			}
-
-			TerminateService.Terminate(ex is { } ? 1 : 0);
 		}
 
-		/// <summary>
-		/// Do not call this method it should only be called by TerminateService.
-		/// </summary>
-		private static async Task TerminateApplicationAsync()
+		try
 		{
-			var mainViewModel = MainWindowViewModel.Instance;
-			if (mainViewModel is { })
+			var app = WasabiAppBuilder
+				.Create("Wasabi GUI", args)
+				.EnsureSingleInstance()
+				.OnUnhandledExceptions(LogUnhandledException)
+				.OnUnobservedTaskExceptions(LogUnobservedTaskException)
+				.OnTermination(TerminateApplication)
+				.Build();
+
+			var exitCode = app.RunAsGui();
+
+			if (app.TerminateService.GracefulCrashException is not null)
 			{
-				mainViewModel.Dispose();
+				throw app.TerminateService.GracefulCrashException;
 			}
 
-			if (CrashReporter.IsInvokeRequired is true)
+			if (exitCode == ExitCode.Ok && app.Global is {Status: {InstallOnClose: true, InstallerFilePath: {Length: > 0} installerFilePath}})
 			{
-				// Trigger the CrashReport process.
-				CrashReporter.TryInvokeCrashReport();
+				Installer.StartInstallingNewVersion(installerFilePath);
 			}
 
-			if (Global is { } global)
+			if (AppLifetimeHelper.RestartRequested)
 			{
-				await global.DisposeAsync().ConfigureAwait(false);
+				// The single-instance lock in SingleInstanceChecker is released now, so we can start a new instance of the application now.
+				AppLifetimeHelper.StartAppWithArgs();
 			}
 
-			AppDomain.CurrentDomain.UnhandledException -= CurrentDomain_UnhandledException;
-			TaskScheduler.UnobservedTaskException -= TaskScheduler_UnobservedTaskException;
+			return (int)exitCode;
+		}
+		catch (Exception ex)
+		{
+			CrashReporter.Invoke(ex);
+			Logger.LogCritical(ex);
+			return 1;
+		}
+	}
 
-			if (mainViewModel is { })
-			{
-				Logger.LogSoftwareStopped("Wasabi GUI");
-			}
-
-			Logger.LogSoftwareStopped("Wasabi");
+	/// <summary>
+	/// Do not call this method it should only be called by TerminateService.
+	/// </summary>
+	private static void TerminateApplication()
+	{
+		Interlocked.Exchange(ref IsShuttingDownFlag, 1);
+		if (Application.Current is null)
+		{
+			return;
 		}
 
-		private static void TaskScheduler_UnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+		Dispatcher.UIThread.Post(() =>
 		{
-			Logger.LogWarning(e?.Exception);
-		}
-
-		private static void CurrentDomain_UnhandledException(object? sender, UnhandledExceptionEventArgs e)
-		{
-			Logger.LogWarning(e?.ExceptionObject as Exception);
-		}
-
-		private static void StartCrashReporter(string[] args)
-		{
-			var result = AppBuilder.Configure<CrashReportApp>().UseReactiveUI();
-
-			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+			if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
 			{
-				result
-					.UseWin32()
-					.UseSkia();
-			}
-			else
-			{
-				result.UsePlatformDetect();
+				DetachTrayIconMenus();
 			}
 
+			(Application.Current.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow?.Close();
+		}, DispatcherPriority.Send);
+	}
+
+	private static void LogUnobservedTaskException(object? sender, AggregateException e)
+	{
+		ReadOnlyCollection<Exception> innerExceptions = e.Flatten().InnerExceptions;
+
+		switch (innerExceptions)
+		{
+			case [SocketException { SocketErrorCode: SocketError.OperationAborted }]:
+			// Source of this exception is NBitcoin library.
+			case [OperationCanceledException { Message: "The peer has been disconnected" }]:
+				// Until https://github.com/MetacoSA/NBitcoin/pull/1089 is resolved.
+				Logger.LogTrace(e);
+				break;
+
+			default:
+				Logger.LogDebug(e);
+				break;
+		}
+	}
+
+	private static void LogUnhandledException(object? sender, Exception e) =>
+		Logger.LogWarning(e);
+
+	private static void DetachTrayIconMenus()
+	{
+		if (Application.Current is not { } app)
+		{
+			return;
+		}
+
+		var trayIcons = TrayIcon.GetIcons(app);
+		if (trayIcons is null)
+		{
+			return;
+		}
+
+		foreach (var icon in trayIcons)
+		{
+			// Detach the menu before shutdown to prevent DBus menu updates after disposal.
+			icon.Menu = null;
+		}
+	}
+
+	/// <summary>
+	/// Sets up and initializes the crash reporting UI.
+	/// </summary>
+	/// <param name="serializableException">The serializable exception</param>
+	private static AppBuilder BuildCrashReporterApp(SerializableException serializableException)
+	{
+		var result = AppBuilder
+			.Configure(() => new CrashReportApp(serializableException))
+			.UseReactiveUI();
+
+		if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+		{
 			result
-				.With(new Win32PlatformOptions { AllowEglInitialization = false, UseDeferredRendering = true })
-				.With(new X11PlatformOptions { UseGpu = false, WmClass = "Wasabi Wallet Crash Reporting" })
-				.With(new AvaloniaNativePlatformOptions { UseDeferredRendering = true, UseGpu = false })
-				.With(new MacOSPlatformOptions { ShowInDock = true });
-
-			result.StartWithClassicDesktopLifetime(args);
+				.UseWin32()
+				.UseSkia();
 		}
-
-		// Avalonia configuration, don't remove; also used by visual designer.
-		private static AppBuilder BuildAvaloniaApp()
+		else
 		{
-			bool useGpuLinux = true;
-
-			var result = AppBuilder.Configure(() => new App(Global))
-				.UseReactiveUI();
-
-			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-			{
-				result
-					.UseWin32()
-					.UseSkia();
-			}
-			else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-			{
-				result.UsePlatformDetect()
-					.UseManagedSystemDialogs<AppBuilder, Window>();
-			}
-			else
-			{
-				result.UsePlatformDetect();
-			}
-
-			return result
-				.With(new Win32PlatformOptions { AllowEglInitialization = true, UseDeferredRendering = true, UseWindowsUIComposition = true })
-				.With(new X11PlatformOptions { UseGpu = useGpuLinux, WmClass = "Wasabi Wallet" })
-				.With(new AvaloniaNativePlatformOptions { UseDeferredRendering = true, UseGpu = true })
-				.With(new MacOSPlatformOptions { ShowInDock = true });
+			result.UsePlatformDetect();
 		}
+
+		return result
+			.With(new Win32PlatformOptions { RenderingMode = new[] { Win32RenderingMode.Software } })
+			.With(new X11PlatformOptions { RenderingMode = new[] { X11RenderingMode.Software }, WmClass = "Wasabi Wallet Crash Report" })
+			.With(new AvaloniaNativePlatformOptions { RenderingMode = new[] { AvaloniaNativeRenderingMode.Software } })
+			.With(new MacOSPlatformOptions { ShowInDock = true })
+			.AfterSetup(_ => ThemeHelper.ApplyTheme(Theme.Dark));
+	}
+}
+
+public static class WasabiAppExtensions
+{
+	public static ExitCode RunAsGui(this WasabiApplication app)
+	{
+		return app.Run(afterStarting: () =>
+			{
+				RxApp.DefaultExceptionHandler = Observer.Create<Exception>(ex =>
+				{
+					if (Debugger.IsAttached)
+					{
+						Debugger.Break();
+					}
+
+					Logger.LogError(ex);
+
+					RxApp.MainThreadScheduler.Schedule(() => throw new ApplicationException("Exception has been thrown in unobserved ThrownExceptions", ex));
+				});
+
+				Logger.LogInfo("Wasabi GUI started.");
+				bool runGuiInBackground = app.AppConfig.Arguments.Any(arg => arg.Contains(StartupHelper.SilentArgument));
+				UiConfig uiConfig = LoadOrCreateUiConfig(Config.DataDir);
+				var services = Services.Create(app.Global, uiConfig, app.TerminateService);
+
+				using CancellationTokenSource stopLoadingCts = new();
+
+				AppBuilder appBuilder = AppBuilder.Configure(() => new App(
+					backendInitializeAsync: async () =>
+					{
+						// macOS require that Avalonia is started with the UI thread. Hence this call must be delayed to this point.
+						await app.Global.InitializeAsync(initializeSleepInhibitor: true, app.TerminateService, stopLoadingCts.Token).ConfigureAwait(false);
+
+						// Make sure that wallet startup set correctly regarding RunOnSystemStartup
+						await StartupHelper.ModifyStartupSettingAsync(uiConfig.RunOnSystemStartup).ConfigureAwait(false);
+					}, startInBg: runGuiInBackground))
+					.UseReactiveUI()
+					.SetupAppBuilder(services.Config.EnableGpu)
+					.AfterSetup(_ =>
+					{
+						ThemeHelper.ApplyTheme(uiConfig.DarkModeEnabled ? Theme.Dark : Theme.Light);
+
+						if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+						{
+							Dispatcher.UIThread.UnhandledException += (_, e) =>
+							{
+								if (Program.IsShuttingDown &&
+									Program.IsDbusMenuShutdownException(e.Exception))
+								{
+									Logger.LogWarning("Suppressing DBusMenuExporter exception during shutdown.");
+									e.Handled = true;
+								}
+							};
+						}
+					});
+
+				if (app.TerminateService.CancellationToken.IsCancellationRequested)
+				{
+					Logger.LogDebug("Skip starting Avalonia UI as requested the application to stop.");
+					stopLoadingCts.Cancel();
+				}
+				else
+				{
+					appBuilder.StartWithClassicDesktopLifetime(app.AppConfig.Arguments);
+				}
+			});
+	}
+
+	private static UiConfig LoadOrCreateUiConfig(string dataDir)
+	{
+		Directory.CreateDirectory(dataDir);
+
+		return UiConfig.LoadFile(Path.Combine(dataDir, "UiConfig.json"));
 	}
 }

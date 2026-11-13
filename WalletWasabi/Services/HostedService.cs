@@ -1,17 +1,15 @@
 using Microsoft.Extensions.Hosting;
-using WalletWasabi.Helpers;
 
-namespace WalletWasabi.Services
+namespace WalletWasabi.Services;
+
+public class HostedService
 {
-	public class HostedService
+	public HostedService(IHostedService service, string friendlyName)
 	{
-		public HostedService(IHostedService service, string friendlyName)
-		{
-			Service = Guard.NotNull(nameof(service), service);
-			FriendlyName = Guard.NotNull(nameof(friendlyName), friendlyName);
-		}
-
-		public IHostedService Service { get; }
-		public string FriendlyName { get; }
+		Service = service;
+		FriendlyName = friendlyName;
 	}
+
+	public IHostedService Service { get; }
+	public string FriendlyName { get; }
 }

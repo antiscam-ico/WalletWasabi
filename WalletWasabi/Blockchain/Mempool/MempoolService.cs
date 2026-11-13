@@ -1,190 +1,95 @@
 using NBitcoin;
-using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
-using System.Net;
 using System.Threading;
-using System.Threading.Tasks;
+using WalletWasabi.Blockchain.Analysis.Clustering;
+using WalletWasabi.Blockchain.TransactionOutputs;
 using WalletWasabi.Blockchain.Transactions;
-using WalletWasabi.Logging;
+using WalletWasabi.Cache;
 using WalletWasabi.Models;
-using WalletWasabi.WebClients.Wasabi;
+using WalletWasabi.Services;
 
-namespace WalletWasabi.Blockchain.Mempool
+namespace WalletWasabi.Blockchain.Mempool;
+
+public class MempoolService(EventBus eventBus)
 {
-	public class MempoolService
+	private readonly MemoryCache<uint256, bool> _cache = new(TimeSpan.FromMinutes(30));
+
+	/// <summary>Transactions that we would reply to INV messages.</summary>
+	/// <remarks>Guarded by <see cref="_broadcastStoreLock"/>.</remarks>
+	private readonly List<TransactionBroadcastEntry> _broadcastStore = new();
+
+	/// <summary>Guards <see cref="_broadcastStore"/>.</summary>
+	private readonly Lock _broadcastStoreLock = new();
+
+	public void ReportSuccessfullyBroadcastedTransaction(SmartTransaction transaction) =>
+		eventBus.Publish(new NewTransactionInMempool(transaction));
+
+	public bool TryAddToBroadcastStore(SmartTransaction transaction)
 	{
-		public MempoolService()
+		lock (_broadcastStoreLock)
 		{
-			ProcessedTransactionHashes = new HashSet<uint256>();
-			ProcessedLock = new object();
-			BroadcastStore = new List<TransactionBroadcastEntry>();
-			BroadcastStoreLock = new object();
-			_cleanupInProcess = 0;
-			TrustedNodeMode = false;
-		}
-
-		public event EventHandler<SmartTransaction>? TransactionReceived;
-
-		private HashSet<uint256> ProcessedTransactionHashes { get; }
-		private object ProcessedLock { get; }
-
-		// Transactions that we would reply to INV messages.
-		private List<TransactionBroadcastEntry> BroadcastStore { get; }
-
-		private object BroadcastStoreLock { get; }
-		public bool TrustedNodeMode { get; set; }
-
-		public bool TryAddToBroadcastStore(Transaction transaction, string nodeRemoteSocketEndpoint)
-		{
-			lock (BroadcastStoreLock)
-			{
-				if (BroadcastStore.Any(x => x.TransactionId == transaction.GetHash()))
-				{
-					return false;
-				}
-				else
-				{
-					var entry = new TransactionBroadcastEntry(transaction, nodeRemoteSocketEndpoint);
-					BroadcastStore.Add(entry);
-					return true;
-				}
-			}
-		}
-
-		public bool TryRemoveFromBroadcastStore(uint256 transactionHash, out TransactionBroadcastEntry entry)
-		{
-			lock (BroadcastStoreLock)
-			{
-				var found = BroadcastStore.FirstOrDefault(x => x.TransactionId == transactionHash);
-				entry = found;
-
-				if (found is null)
-				{
-					return false;
-				}
-				else
-				{
-					BroadcastStore.RemoveAll(x => x.TransactionId == transactionHash);
-					return true;
-				}
-			}
-		}
-
-		public bool TryGetFromBroadcastStore(uint256 transactionHash, out TransactionBroadcastEntry entry)
-		{
-			lock (BroadcastStoreLock)
-			{
-				var found = BroadcastStore.FirstOrDefault(x => x.TransactionId == transactionHash);
-				entry = found;
-
-				return found is { };
-			}
-		}
-
-		public IEnumerable<TransactionBroadcastEntry> GetBroadcastStore()
-		{
-			lock (BroadcastStoreLock)
-			{
-				return BroadcastStore.ToList();
-			}
-		}
-
-		private int _cleanupInProcess;
-
-		/// <summary>
-		/// Tries to perform mempool cleanup with the help of the backend.
-		/// </summary>
-		public async Task<bool> TryPerformMempoolCleanupAsync(WasabiClientFactory wasabiClientFactory)
-		{
-			// If already cleaning, then no need to run it that often.
-			if (Interlocked.CompareExchange(ref _cleanupInProcess, 1, 0) == 1)
+			if (_broadcastStore.Any(x => x.Is(transaction.Transaction.GetWitHash())))
 			{
 				return false;
 			}
 
-			// This function is designed to prevent forever growing mempool.
-			try
-			{
-				// No need for locking when accessing Count.
-				if (ProcessedTransactionHashes.Count == 0)
-				{
-					// There's nothing to cleanup.
-					return true;
-				}
-
-				Logger.LogInfo("Start cleaning out mempool...");
-				using (var client = wasabiClientFactory.NewBackendClient())
-				{
-					var compactness = 10;
-					var allMempoolHashes = await client.GetMempoolHashesAsync(compactness).ConfigureAwait(false);
-
-					lock (ProcessedLock)
-					{
-						int removedTxCount = ProcessedTransactionHashes.RemoveWhere(x => !allMempoolHashes.Contains(x.ToString().Substring(0, compactness)));
-
-						Logger.LogInfo($"{removedTxCount} transactions were cleaned from mempool.");
-					}
-				}
-
-				// Display warning if total receives would be reached by duplicated receives.
-				// Also reset the benchmarking.
-				var totalReceived = Interlocked.Exchange(ref _totalReceives, 0);
-				var duplicatedReceived = Interlocked.Exchange(ref _duplicatedReceives, 0);
-				if (duplicatedReceived >= totalReceived && totalReceived != 0)
-				{
-					// Note that the worst case scenario is not duplicatedReceived == totalReceived, but duplicatedReceived == (number of peers) * totalReceived.
-					// It's just duplicatedReceived == totalReceived is maximum what we want to tolerate.
-					// By turning off Tor, we can notice that the ratio is much better, so this mainly depends on the internet speed.
-					Logger.LogWarning($"Too many duplicated mempool transactions are downloaded.\n{nameof(duplicatedReceived)} : {duplicatedReceived}\n{nameof(totalReceived)} : {totalReceived}");
-				}
-
-				return true;
-			}
-			catch (Exception ex)
-			{
-				Logger.LogWarning(ex);
-			}
-			finally
-			{
-				Interlocked.Exchange(ref _cleanupInProcess, 0);
-			}
-
-			return false;
+			var entry = new TransactionBroadcastEntry(transaction);
+			_broadcastStore.Add(entry);
+			return true;
 		}
+	}
 
-		public bool IsProcessed(uint256 txid)
+	public bool TryGetFromBroadcastStore(uint256 transactionHash, [NotNullWhen(true)] out TransactionBroadcastEntry? entry)
+	{
+		lock (_broadcastStoreLock)
 		{
-			lock (ProcessedLock)
-			{
-				return ProcessedTransactionHashes.Contains(txid);
-			}
+			entry = _broadcastStore.FirstOrDefault(x => x.Is(transactionHash));
+			return entry is not null;
 		}
+	}
 
-		private long _totalReceives = 0;
-		private long _duplicatedReceives = 0;
-
-		public void Process(Transaction tx)
+	private LabelsArray TryGetLabel(uint256 txid)
+	{
+		var label = LabelsArray.Empty;
+		if (TryGetFromBroadcastStore(txid, out var entry))
 		{
-			SmartTransaction? txAdded = null;
+			label = entry.Transaction.Labels;
+		}
 
-			lock (ProcessedLock)
-			{
-				if (ProcessedTransactionHashes.Add(tx.GetHash()))
-				{
-					txAdded = new SmartTransaction(tx, Height.Mempool);
-				}
-				else
-				{
-					Interlocked.Increment(ref _duplicatedReceives);
-				}
-				Interlocked.Increment(ref _totalReceives);
-			}
+		return label;
+	}
 
-			if (txAdded is { })
+	public bool IsProcessed(uint256 txid)
+	{
+		return _cache.TryGet(txid, out _);
+	}
+
+	public void Process(Transaction tx)
+	{
+		var txId = tx.GetHash();
+		if (_cache.TryAdd(txId, true, TimeSpan.FromHours(1)))
+		{
+			var txAdded = new SmartTransaction(tx, Height.Mempool, labels: TryGetLabel(txId));
+			eventBus.Publish(new NewTransactionInMempool(txAdded));
+		}
+	}
+
+	public bool TrySpend(SmartCoin coin, SmartTransaction tx)
+	{
+		var spent = false;
+		lock (_broadcastStoreLock)
+		{
+			foreach (var foundCoin in _broadcastStore
+				.SelectMany(x => x.Transaction.WalletInputs)
+				.Concat(_broadcastStore.SelectMany(x => x.Transaction.WalletOutputs))
+				.Where(x => x == coin))
 			{
-				TransactionReceived?.Invoke(this, txAdded);
+				foundCoin.SpenderTransaction = tx;
+				spent = true;
 			}
 		}
+		return spent;
 	}
 }

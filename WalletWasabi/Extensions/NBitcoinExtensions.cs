@@ -1,476 +1,456 @@
 using NBitcoin.DataEncoders;
 using NBitcoin.Protocol;
-using System;
-using System.Collections.Generic;
-using System.Globalization;
-using System.Linq;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
-using WalletWasabi.Blockchain.Keys;
 using WalletWasabi.Blockchain.Transactions;
-using WalletWasabi.CoinJoin.Common.Crypto;
-using WalletWasabi.Helpers;
-using WalletWasabi.Logging;
-using WalletWasabi.Models;
-using static WalletWasabi.Crypto.SchnorrBlinding;
 
-namespace NBitcoin
+namespace WalletWasabi.Extensions;
+
+public static class NBitcoinExtensions
 {
-	public static class NBitcoinExtensions
+	/// <summary>
+	/// Downloads the block (which is assumed to exist) from the given peer node.
+	/// </summary>
+	/// <returns>The requested block.</returns>
+	/// <exception cref="InvalidOperationException">The peer does not serve blocks at all, or the block was not found, or the peer was disconnected.</exception>
+	/// <exception cref="OperationCanceledException">The operation was canceled.</exception>
+	/// <seealso href="https://github.com/bitcoin/bitcoin/blob/ab7e668cc6af5d716ad40166d1f88235a2f6d25d/test/functional/p2p_getdata.py#L25-L44"/>
+	public static async Task<Block> DownloadBlockAsync(this Node node, uint256 hash, CancellationToken cancellationToken)
 	{
-		public static async Task<Block> DownloadBlockAsync(this Node node, uint256 hash, CancellationToken cancellationToken)
+		if (node.State == NodeState.Connected)
 		{
-			if (node.State == NodeState.Connected)
+			await node.VersionHandshakeAsync(cancellationToken).ConfigureAwait(false);
+		}
+
+		if (!node.CanServeBlocks)
+		{
+			throw new InvalidOperationException($"Node '{node.RemoteSocketEndpoint}' does not serve blocks (neither NODE_NETWORK nor NODE_NETWORK_LIMITED).");
+		}
+
+		using var listener = node.CreateListener();
+
+		// Ask for a specific block. 
+		var getData = new GetDataPayload(new InventoryVector(InventoryType.MSG_BLOCK, hash));
+		await node.SendMessageAsync(getData).ConfigureAwait(false);
+		cancellationToken.ThrowIfCancellationRequested();
+
+		// Send a ping message. 
+		// Note: If the block is not known by the remote node, it will send a pong immediately. If the block is known, it will send the block first and then the pong.
+		ulong pingNonce = RandomUtils.GetUInt64();
+		await node.SendMessageAsync(new PingPayload { Nonce = pingNonce }).ConfigureAwait(false);
+
+		while (true)
+		{
+			if (!node.IsConnected)
 			{
-				node.VersionHandshake(cancellationToken);
+				throw new InvalidOperationException($"Node '{node.RemoteSocketEndpoint}' disconnected while downloading block '{hash}'.");
 			}
 
-			using var listener = node.CreateListener();
-			var getdata = new GetDataPayload(new InventoryVector(node.AddSupportedOptions(InventoryType.MSG_BLOCK), hash));
-			await node.SendMessageAsync(getdata).ConfigureAwait(false);
 			cancellationToken.ThrowIfCancellationRequested();
+			var incomingMessage = await listener.ReceiveMessageAsync(cancellationToken).ConfigureAwait(false);
+			var payload = incomingMessage.Message.Payload;
 
-			// Bitcoin Core processes the messages sequentially and does not send a NOTFOUND message if the remote node is pruned and the data not available.
-			// A good way to get any feedback about whether the node knows the block or not is to send a ping request.
-			// If block is not known by the remote node, the pong will be sent immediately, else it will be sent after the block download.
-			ulong pingNonce = RandomUtils.GetUInt64();
-			await node.SendMessageAsync(new PingPayload() { Nonce = pingNonce }).ConfigureAwait(false);
-			while (true)
+			if (payload is BlockPayload b && b.Object.GetHash() == hash)
 			{
-				cancellationToken.ThrowIfCancellationRequested();
-				var message = listener.ReceiveMessage(cancellationToken);
-				if (message.Message.Payload is NotFoundPayload ||
-					(message.Message.Payload is PongPayload p && p.Nonce == pingNonce))
+				return b.Object;
+			}
+
+			// If we receive the pong, it means the block was not found.
+			// However, there is an exception: a limited peer disconnects us (instead of sending a pong) if the block is deeper than NODE_NETWORK_LIMITED_MIN_BLOCKS (288) + 2.
+			if (payload is PongPayload pong && pong.Nonce == pingNonce)
+			{
+				throw new InvalidOperationException($"Node {node.RemoteSocketEndpoint} does not have block {hash}.");
+			}
+		}
+	}
+
+	/// <summary>
+	/// Based on transaction data, it decides if it's possible that native segwit script played a part in this transaction.
+	/// </summary>
+	public static bool SegWitInvolved(this Transaction me) =>
+		me.Inputs.Any(i => Script.IsNullOrEmpty(i.ScriptSig)) ||
+		me.Outputs.Any(o => o.ScriptPubKey.IsScriptType(ScriptType.Witness));
+
+	public static IEnumerable<(Money value, int count)> GetIndistinguishableOutputs(this Transaction me, bool includeSingle)
+	{
+		return me.Outputs.GroupBy(x => x.Value)
+			.ToDictionary(x => x.Key, y => y.Count())
+			.Select(x => (x.Key, x.Value))
+			.Where(x => includeSingle || x.Value > 1);
+	}
+
+	/// <summary>
+	/// Careful, if it's in a legacy block then this won't work.
+	/// </summary>
+	public static bool HasWitScript(this TxIn me)
+	{
+		bool notNull = me.WitScript is not null;
+		bool notEmpty = me.WitScript != WitScript.Empty;
+		return notNull && notEmpty;
+	}
+
+	public static Money Percentage(this Money me, decimal perc)
+	{
+		return Money.Satoshis((me.Satoshi / 100m) * perc);
+	}
+
+	public static string ToZPrv(this ExtKey extKey, Network network)
+	{
+		var data = extKey.ToBytes();
+		var version = (network == Network.Main)
+			? new byte[] { (0x04), (0xB2), (0x43), (0x0C) }
+			: new byte[] { (0x04), (0x5F), (0x18), (0xBC) };
+
+		return Encoders.Base58Check.EncodeData(version.Concat(data).ToArray());
+	}
+
+	public static SmartTransaction ExtractSmartTransaction(this PSBT psbt)
+	{
+		var extractedTx = psbt.ExtractTransaction();
+		return new SmartTransaction(extractedTx);
+	}
+
+	public static SmartTransaction ExtractSmartTransaction(this PSBT psbt, SmartTransaction unsignedSmartTransaction)
+	{
+		var extractedTx = psbt.ExtractTransaction();
+		return new SmartTransaction(
+			extractedTx,
+			unsignedSmartTransaction.Height,
+			unsignedSmartTransaction.BlockHash,
+			unsignedSmartTransaction.BlockIndex,
+			unsignedSmartTransaction.Labels,
+			unsignedSmartTransaction.IsReplacement,
+			unsignedSmartTransaction.IsSpeedup,
+			unsignedSmartTransaction.IsCancellation,
+			unsignedSmartTransaction.FirstSeen);
+	}
+
+	/// <param name="startWithM">The keypath will start with m/ or not.</param>
+	/// <param name="format">Either h or ', eg.: m/84h/0h/0 or m/84'/0'/0</param>
+	public static string ToString(this KeyPath me, bool startWithM, string format)
+	{
+		var toStringBuilder = new StringBuilder(me.ToString());
+
+		if (startWithM)
+		{
+			toStringBuilder.Insert(0, "m/");
+		}
+
+		if (format == "h")
+		{
+			toStringBuilder.Replace('\'', 'h');
+		}
+
+		return toStringBuilder.ToString();
+	}
+
+	public static BitcoinWitPubKeyAddress TransformToNetwork(this BitcoinWitPubKeyAddress me, Network desiredNetwork)
+	{
+		Network originalNetwork = me.Network;
+
+		if (originalNetwork == desiredNetwork)
+		{
+			return me;
+		}
+
+		var newAddress = new BitcoinWitPubKeyAddress(me.Hash, desiredNetwork);
+
+		return newAddress;
+	}
+
+	public static IEnumerable<TransactionDependencyNode> ToDependencyGraph(this IEnumerable<Transaction> txs)
+	{
+		var lookup = new Dictionary<uint256, TransactionDependencyNode>();
+		foreach (var tx in txs)
+		{
+			lookup.Add(tx.GetHash(), new TransactionDependencyNode(tx));
+		}
+
+		foreach (var node in lookup.Values)
+		{
+			foreach (var input in node.Transaction.Inputs)
+			{
+				if (lookup.TryGetValue(input.PrevOut.Hash, out var parent))
 				{
-					throw new InvalidOperationException($"Disconnected local node, because it does not have the block data.");
-				}
-				else if (message.Message.Payload is BlockPayload b && b.Object?.GetHash() == hash)
-				{
-					return b.Object;
-				}
-			}
-		}
-
-		public static IEnumerable<OutPoint> ToOutPoints(this TxInList me)
-		{
-			foreach (var input in me)
-			{
-				yield return input.PrevOut;
-			}
-		}
-
-		public static IEnumerable<Coin> GetCoins(this TxOutList me, Script script)
-		{
-			return me.AsCoins().Where(c => c.ScriptPubKey == script);
-		}
-
-		public static string ToHex(this IBitcoinSerializable me)
-		{
-			return ByteHelpers.ToHex(me.ToBytes());
-		}
-
-		public static void FromHex(this IBitcoinSerializable me, string hex)
-		{
-			Guard.NotNullOrEmptyOrWhitespace(nameof(hex), hex);
-			me.FromBytes(ByteHelpers.FromHex(hex));
-		}
-
-		/// <summary>
-		/// Based on transaction data, it decides if it's possible that native segwit script played a par in this transaction.
-		/// </summary>
-		public static bool PossiblyP2WPKHInvolved(this Transaction me)
-		{
-			// We omit Guard, because it's performance critical in Wasabi.
-			// We start with the inputs, because, this check is faster.
-			// Note: by testing performance the order does not seem to affect the speed of loading the wallet.
-			foreach (TxIn input in me.Inputs)
-			{
-				if (input.ScriptSig is null || input.ScriptSig == Script.Empty)
-				{
-					return true;
-				}
-			}
-			foreach (TxOut output in me.Outputs)
-			{
-				if (output.ScriptPubKey.IsScriptType(ScriptType.P2WPKH))
-				{
-					return true;
-				}
-			}
-			return false;
-		}
-
-		public static bool HasIndistinguishableOutputs(this Transaction me)
-		{
-			var hashset = new HashSet<long>();
-			foreach (var name in me.Outputs.Select(x => x.Value))
-			{
-				if (!hashset.Add(name))
-				{
-					return true;
-				}
-			}
-			return false;
-		}
-
-		public static IEnumerable<(Money value, int count)> GetIndistinguishableOutputs(this Transaction me, bool includeSingle)
-		{
-			return me.Outputs.GroupBy(x => x.Value)
-				.ToDictionary(x => x.Key, y => y.Count())
-				.Select(x => (x.Key, x.Value))
-				.Where(x => includeSingle || x.Value > 1);
-		}
-
-		public static int GetAnonymitySet(this Transaction me, int outputIndex)
-		{
-			// 1. Get the output corresponting to the output index.
-			var output = me.Outputs[outputIndex];
-			// 2. Get the number of equal outputs.
-			int equalOutputs = me.GetIndistinguishableOutputs(includeSingle: true).Single(x => x.value == output.Value).count;
-			// 3. Anonymity set cannot be larger than the number of inputs.
-			var inputCount = me.Inputs.Count;
-			var anonSet = Math.Min(equalOutputs, inputCount);
-			return anonSet;
-		}
-
-		public static int GetAnonymitySet(this Transaction me, uint outputIndex) => GetAnonymitySet(me, (int)outputIndex);
-
-		/// <summary>
-		/// Careful, if it's in a legacy block then this won't work.
-		/// </summary>
-		public static bool HasWitScript(this TxIn me)
-		{
-			Guard.NotNull(nameof(me), me);
-
-			bool notNull = me.WitScript is { };
-			bool notEmpty = me.WitScript != WitScript.Empty;
-			return notNull && notEmpty;
-		}
-
-		public static Money Percentage(this Money me, decimal perc)
-		{
-			return Money.Satoshis((me.Satoshi / 100m) * perc);
-		}
-
-		public static decimal ToUsd(this Money me, decimal btcExchangeRate)
-		{
-			return me.ToDecimal(MoneyUnit.BTC) * btcExchangeRate;
-		}
-
-		public static bool VerifyMessage(this BitcoinWitPubKeyAddress address, uint256 messageHash, byte[] signature)
-		{
-			PubKey pubKey = PubKey.RecoverCompact(messageHash, signature);
-			return pubKey.WitHash == address.Hash;
-		}
-
-		/// <summary>
-		/// If scriptpubkey is already present, just add the value.
-		/// </summary>
-		public static void AddWithOptimize(this TxOutList me, Money money, Script scriptPubKey)
-		{
-			TxOut found = me.FirstOrDefault(x => x.ScriptPubKey == scriptPubKey);
-			if (found is { })
-			{
-				found.Value += money;
-			}
-			else
-			{
-				me.Add(money, scriptPubKey);
-			}
-		}
-
-		/// <summary>
-		/// If scriptpubkey is already present, just add the value.
-		/// </summary>
-		public static void AddWithOptimize(this TxOutList me, Money money, IDestination destination)
-		{
-			me.AddWithOptimize(money, destination.ScriptPubKey);
-		}
-
-		/// <summary>
-		/// If scriptpubkey is already present, just add the value.
-		/// </summary>
-		public static void AddWithOptimize(this TxOutList me, TxOut txOut)
-		{
-			me.AddWithOptimize(txOut.Value, txOut.ScriptPubKey);
-		}
-
-		/// <summary>
-		/// If scriptpubkey is already present, just add the value.
-		/// </summary>
-		public static void AddRangeWithOptimize(this TxOutList me, IEnumerable<TxOut> collection)
-		{
-			foreach (var txOut in collection)
-			{
-				me.AddWithOptimize(txOut);
-			}
-		}
-
-		public static uint256 BlindMessage(this Requester requester, uint256 messageHash, SchnorrPubKey schnorrPubKey) => requester.BlindMessage(messageHash, schnorrPubKey.RpubKey, schnorrPubKey.SignerPubKey);
-
-		public static string ToZpub(this ExtPubKey extPubKey, Network network)
-		{
-			var data = extPubKey.ToBytes();
-			var version = (network == Network.Main)
-				? new byte[] { (0x04), (0xB2), (0x47), (0x46) }
-				: new byte[] { (0x04), (0x5F), (0x1C), (0xF6) };
-
-			return Encoders.Base58Check.EncodeData(version.Concat(data).ToArray());
-		}
-
-		public static string ToZPrv(this ExtKey extKey, Network network)
-		{
-			var data = extKey.ToBytes();
-			var version = (network == Network.Main)
-				? new byte[] { (0x04), (0xB2), (0x43), (0x0C) }
-				: new byte[] { (0x04), (0x5F), (0x18), (0xBC) };
-
-			return Encoders.Base58Check.EncodeData(version.Concat(data).ToArray());
-		}
-
-		public static SmartTransaction ExtractSmartTransaction(this PSBT psbt)
-		{
-			var extractedTx = psbt.ExtractTransaction();
-			return new SmartTransaction(extractedTx, Height.Unknown);
-		}
-
-		public static SmartTransaction ExtractSmartTransaction(this PSBT psbt, SmartTransaction unsignedSmartTransaction)
-		{
-			var extractedTx = psbt.ExtractTransaction();
-			return new SmartTransaction(extractedTx,
-				unsignedSmartTransaction.Height,
-				unsignedSmartTransaction.BlockHash,
-				unsignedSmartTransaction.BlockIndex,
-				unsignedSmartTransaction.Label,
-				unsignedSmartTransaction.IsReplacement,
-				unsignedSmartTransaction.FirstSeen);
-		}
-
-		public static void SortByAmount(this TxOutList list)
-		{
-			list.Sort((x, y) => x.Value.CompareTo(y.Value));
-		}
-
-		/// <param name="startWithM">The keypath will start with m/ or not.</param>
-		/// <param name="format">h or ', eg.: m/84h/0h/0 or m/84'/0'/0</param>
-		public static string ToString(this KeyPath me, bool startWithM, string format)
-		{
-			var toStringBuilder = new StringBuilder(me.ToString());
-
-			if (startWithM)
-			{
-				toStringBuilder.Insert(0, "m/");
-			}
-
-			if (format == "h")
-			{
-				toStringBuilder.Replace('\'', 'h');
-			}
-
-			return toStringBuilder.ToString();
-		}
-
-		public static BitcoinWitPubKeyAddress TransformToNetworkNetwork(this BitcoinWitPubKeyAddress me, Network desiredNetwork)
-		{
-			Network originalNetwork = me.Network;
-
-			if (originalNetwork == desiredNetwork)
-			{
-				return me;
-			}
-
-			var newAddress = new BitcoinWitPubKeyAddress(me.Hash, desiredNetwork);
-
-			return newAddress;
-		}
-
-		public static void SortByAmount(this TxInList list, List<Coin> coins)
-		{
-			var map = new Dictionary<TxIn, Coin>();
-			foreach (var coin in coins)
-			{
-				map.Add(list.Single(x => x.PrevOut == coin.Outpoint), coin);
-			}
-			list.Sort((x, y) => map[x].Amount.CompareTo(map[y].Amount));
-		}
-
-		public static Money GetTotalFee(this FeeRate me, int vsize)
-		{
-			return Money.Satoshis(Math.Round(me.SatoshiPerByte * vsize));
-		}
-
-		public static IEnumerable<TransactionDependencyNode> ToDependencyGraph(this IEnumerable<Transaction> txs)
-		{
-			var lookup = new Dictionary<uint256, TransactionDependencyNode>();
-			foreach (var tx in txs)
-			{
-				lookup.Add(tx.GetHash(), new TransactionDependencyNode { Transaction = tx });
-			}
-
-			foreach (var node in lookup.Values)
-			{
-				foreach (var input in node.Transaction.Inputs)
-				{
-					if (lookup.TryGetValue(input.PrevOut.Hash, out var parent))
+					if (!node.Parents.Contains(parent))
 					{
-						if (!node.Parents.Contains(parent))
-						{
-							node.Parents.Add(parent);
-						}
-						if (!parent.Children.Contains(node))
-						{
-							parent.Children.Add(node);
-						}
+						node.Parents.Add(parent);
+					}
+					if (!parent.Children.Contains(node))
+					{
+						parent.Children.Add(node);
 					}
 				}
 			}
-			var nodes = lookup.Values;
-			return nodes.Where(x => !x.Parents.Any());
 		}
+		var nodes = lookup.Values;
+		return nodes.Where(x => x.Parents.Count == 0);
+	}
 
-		public static IEnumerable<Transaction> OrderByDependency(this IEnumerable<TransactionDependencyNode> roots)
+	public static IEnumerable<Transaction> OrderByDependency(this IEnumerable<TransactionDependencyNode> roots)
+	{
+		var parentCounter = new Dictionary<TransactionDependencyNode, int>();
+
+		void Walk(TransactionDependencyNode node)
 		{
-			var parentCounter = new Dictionary<TransactionDependencyNode, int>();
-
-			void Walk(TransactionDependencyNode node)
+			if (!parentCounter.ContainsKey(node))
 			{
-				if (!parentCounter.ContainsKey(node))
+				parentCounter.Add(node, node.Parents.Count);
+				foreach (var child in node.Children)
 				{
-					parentCounter.Add(node, node.Parents.Count());
-					foreach (var child in node.Children)
-					{
-						Walk(child);
-					}
+					Walk(child);
 				}
 			}
+		}
 
-			foreach (var root in roots)
-			{
-				Walk(root);
-			}
+		foreach (var root in roots)
+		{
+			Walk(root);
+		}
 
-			var nodes = parentCounter.Where(x => x.Value == 0).Select(x => x.Key).Distinct().ToArray();
-			while (nodes.Any())
+		var nodes = parentCounter.Where(x => x.Value == 0).Select(x => x.Key).Distinct().ToArray();
+		while (nodes.Length != 0)
+		{
+			foreach (var node in nodes)
 			{
-				foreach (var node in nodes)
+				yield return node.Transaction;
+				parentCounter.Remove(node);
+				foreach (var child in node.Children)
 				{
-					yield return node.Transaction;
-					parentCounter.Remove(node);
-					foreach (var child in node.Children)
-					{
-						parentCounter[child] = parentCounter[child] - 1;
-					}
+					parentCounter[child] = parentCounter[child] - 1;
 				}
-				nodes = parentCounter.Where(x => x.Value == 0).Select(x => x.Key).Distinct().ToArray();
 			}
+			nodes = parentCounter.Where(x => x.Value == 0).Select(x => x.Key).Distinct().ToArray();
 		}
+	}
 
-		public static ScriptPubKeyType? GetInputScriptPubKeyType(this PSBTInput i)
+	/// <summary>
+	/// Tries to equip the PSBT with input and output keypaths on best effort.
+	/// </summary>
+	public static void AddKeyPaths(this PSBT psbt, KeyManager keyManager)
+	{
+		if (keyManager.MasterFingerprint.HasValue)
 		{
-			if (i.WitnessUtxo.ScriptPubKey.IsScriptType(ScriptType.P2WPKH))
+			var fp = keyManager.MasterFingerprint.Value;
+
+			// Add input keypaths.
+			foreach (var script in psbt.Inputs.Select(x => x.WitnessUtxo?.ScriptPubKey).ToArray())
 			{
-				return ScriptPubKeyType.Segwit;
-			}
-
-			if (i.WitnessUtxo.ScriptPubKey.IsScriptType(ScriptType.P2SH) &&
-				i.FinalScriptWitness.ToScript().IsScriptType(ScriptType.P2WPKH))
-			{
-				return ScriptPubKeyType.SegwitP2SH;
-			}
-
-			return null;
-		}
-
-		private static NumberFormatInfo CurrencyNumberFormat = new NumberFormatInfo()
-		{
-			NumberGroupSeparator = " ",
-			NumberDecimalDigits = 0
-		};
-
-		private static string ToCurrency(this Money btc, string currency, decimal exchangeRate, bool privacyMode = false)
-		{
-			var dollars = exchangeRate * btc.ToDecimal(MoneyUnit.BTC);
-
-			return privacyMode
-				? $"### {currency}"
-				: exchangeRate == default
-					? $"??? {currency}"
-					: $"{dollars.ToString("N", CurrencyNumberFormat)} {currency}";
-		}
-
-		public static string ToUsdString(this Money btc, decimal usdExchangeRate, bool privacyMode = false)
-		{
-			return ToCurrency(btc, "USD", usdExchangeRate, privacyMode);
-		}
-
-		/// <summary>
-		/// Tries to equip the PSBT with input and output keypaths on best effort.
-		/// </summary>
-		public static void AddKeyPaths(this PSBT psbt, KeyManager keyManager)
-		{
-			if (keyManager.MasterFingerprint.HasValue)
-			{
-				var fp = keyManager.MasterFingerprint.Value;
-				// Add input keypaths.
-				foreach (var script in psbt.Inputs.Select(x => x.WitnessUtxo?.ScriptPubKey).ToArray())
+				if (script is { })
 				{
-					if (script is { })
-					{
-						var hdPubKey = keyManager.GetKeyForScriptPubKey(script);
-						if (hdPubKey is { })
-						{
-							psbt.AddKeyPath(fp, hdPubKey, script);
-						}
-					}
-				}
-
-				// Add output keypaths.
-				foreach (var script in psbt.Outputs.Select(x => x.ScriptPubKey).ToArray())
-				{
-					var hdPubKey = keyManager.GetKeyForScriptPubKey(script);
-					if (hdPubKey is { })
+					if (keyManager.TryGetKeyForScriptPubKey(script, out HdPubKey? hdPubKey))
 					{
 						psbt.AddKeyPath(fp, hdPubKey, script);
 					}
 				}
 			}
-		}
 
-		public static void AddKeyPath(this PSBT psbt, HDFingerprint fp, HdPubKey hdPubKey, Script script)
-		{
-			var rootKeyPath = new RootedKeyPath(fp, hdPubKey.FullKeyPath);
-			psbt.AddKeyPath(hdPubKey.PubKey, rootKeyPath, script);
-		}
-
-		/// <summary>
-		/// Tries to equip the PSBT with previous transactions with best effort.
-		/// </summary>
-		public static void AddPrevTxs(this PSBT psbt, AllTransactionStore transactionStore)
-		{
-			// Fill out previous transactions.
-			foreach (var psbtInput in psbt.Inputs)
+			// Add output keypaths.
+			foreach (var script in psbt.Outputs.Select(x => x.ScriptPubKey).ToArray())
 			{
-				if (transactionStore.TryGetTransaction(psbtInput.PrevOut.Hash, out var tx))
+				if (keyManager.TryGetKeyForScriptPubKey(script, out HdPubKey? hdPubKey))
 				{
-					psbtInput.NonWitnessUtxo = tx.Transaction;
-				}
-				else
-				{
-					Logger.LogInfo($"Transaction id: {psbtInput.PrevOut.Hash} is missing from the {nameof(transactionStore)}. Ignoring...");
+					psbt.AddKeyPath(fp, hdPubKey, script);
 				}
 			}
 		}
+	}
 
-		public static FeeRate GetSanityFeeRate(this MemPoolInfo me)
+	public static void AddKeyPath(this PSBT psbt, HDFingerprint fp, HdPubKey hdPubKey, Script script)
+	{
+		var rootKeyPath = new RootedKeyPath(fp, hdPubKey.FullKeyPath);
+		psbt.AddKeyPath(hdPubKey.PubKey, rootKeyPath, script);
+	}
+
+	/// <summary>
+	/// Tries to equip the PSBT with previous transactions with best effort. Always <see cref="AddKeyPaths"/> first otherwise the prev tx won't be added.
+	/// </summary>
+	public static void AddPrevTxs(this PSBT psbt, ITransactionStore transactionStore)
+	{
+		// Fill out previous transactions.
+		foreach (var psbtInput in psbt.Inputs)
 		{
-			var mempoolMinFee = (decimal)me.MemPoolMinFee;
-
-			// Make sure to be prepare for mempool spikes.
-			var spikeSanity = mempoolMinFee * 1.5m;
-
-			var sanityFee = FeeRate.Max(new FeeRate(Money.Coins(spikeSanity)), new FeeRate(2m));
-			return sanityFee;
+			if (transactionStore.TryGetTransaction(psbtInput.PrevOut.Hash, out var tx))
+			{
+				psbtInput.NonWitnessUtxo = tx.Transaction;
+			}
+			else
+			{
+				Logger.LogDebug($"Transaction id: {psbtInput.PrevOut.Hash} is missing from the {nameof(transactionStore)}. Ignoring...");
+			}
 		}
+	}
+
+	public static FeeRate GetSanityFeeRate(this MemPoolInfo me)
+	{
+		var mempoolMinFee = (decimal)me.MemPoolMinFee;
+
+		// Make sure to be prepared for mempool spikes.
+		var spikeSanity = mempoolMinFee * 1.5m;
+
+		var sanityFee = FeeRate.Max(new FeeRate(Money.Coins(spikeSanity)), new FeeRate(0.5m));
+		return sanityFee;
+	}
+
+	public static int EstimateOutputVsize(this Script scriptPubKey) =>
+		new TxOut(Money.Zero, scriptPubKey).GetSerializedSize();
+
+	public static int EstimateInputVsize(this Script scriptPubKey) =>
+		scriptPubKey.GetScriptType().EstimateInputVsize();
+
+	public static int EstimateInputVsize(this ScriptType scriptType) =>
+		scriptType switch
+		{
+			ScriptType.P2WPKH => Constants.P2wpkhInputVirtualSize,
+			ScriptType.Taproot => Constants.P2trInputVirtualSize,
+			ScriptType.P2PKH => Constants.P2pkhInputVirtualSize,
+			ScriptType.P2SH => Constants.P2shInputVirtualSize,
+			ScriptType.P2WSH => Constants.P2wshInputVirtualSize,
+			_ => throw new NotImplementedException($"Size estimation isn't implemented for provided script type.")
+		};
+
+	public static int EstimateOutputVsize(this ScriptType scriptType) =>
+		scriptType switch
+		{
+			ScriptType.P2WPKH => Constants.P2wpkhOutputVirtualSize,
+			ScriptType.Taproot => Constants.P2trOutputVirtualSize,
+			ScriptType.P2PKH => Constants.P2pkhOutputVirtualSize,
+			ScriptType.P2SH => Constants.P2shOutputVirtualSize,
+			ScriptType.P2WSH => Constants.P2wshOutputVirtualSize,
+			_ => throw new NotImplementedException($"Size estimation isn't implemented for provided script type.")
+		};
+
+	public static Money EffectiveCost(this TxOut output, FeeRate feeRate) =>
+		output.Value + feeRate.GetFee(output.ScriptPubKey.EstimateOutputVsize());
+
+	public static Money EffectiveValue(this ICoin coin, FeeRate feeRate)
+		=> EffectiveValue(coin.TxOut.Value, virtualSize: coin.TxOut.ScriptPubKey.EstimateInputVsize(), feeRate);
+
+	public static Money EffectiveValue(this SmartCoin coin, FeeRate feeRate)
+		=> EffectiveValue(coin.Amount, virtualSize: coin.ScriptType.EstimateInputVsize(), feeRate);
+
+	private static Money EffectiveValue(Money amount, int virtualSize, FeeRate feeRate)
+	{
+		var networkFee = feeRate.GetFee(virtualSize);
+		return amount - networkFee;
+	}
+
+	public static T FromBytes<T>(byte[] input) where T : IBitcoinSerializable, new()
+	{
+		BitcoinStream inputStream = new(input);
+		var instance = new T();
+		inputStream.ReadWrite(instance);
+		if (inputStream.Inner.Length != inputStream.Inner.Position)
+		{
+			throw new FormatException("Expected end of stream");
+		}
+
+		return instance;
+	}
+
+	/// <summary>
+	/// Extracts a unique public key identifier. If it can't do that, then it returns the scriptPubKey byte array.
+	/// </summary>
+	public static byte[] ExtractKeyId(this Script scriptPubKey)
+	{
+		return scriptPubKey.TryGetScriptType() switch
+		{
+			ScriptType.P2WPKH => PayToWitPubKeyHashTemplate.Instance.ExtractScriptPubKeyParameters(scriptPubKey)!.ToBytes(),
+			ScriptType.P2PKH => PayToPubkeyHashTemplate.Instance.ExtractScriptPubKeyParameters(scriptPubKey)!.ToBytes(),
+			ScriptType.P2PK => PayToPubkeyTemplate.Instance.ExtractScriptPubKeyParameters(scriptPubKey)!.ToBytes(),
+			_ => scriptPubKey.ToBytes()
+		};
+	}
+
+	public static ScriptType GetScriptType(this Script script)
+	{
+		return TryGetScriptType(script) ?? throw new NotImplementedException("Unknown script type.");
+	}
+
+	public static ScriptType? TryGetScriptType(this Script script)
+	{
+		foreach (ScriptType scriptType in new[] { ScriptType.P2WPKH, ScriptType.P2PKH, ScriptType.P2PK, ScriptType.P2WSH, ScriptType.Taproot, ScriptType.P2SH })
+		{
+			if (script.IsScriptType(scriptType))
+			{
+				return scriptType;
+			}
+		}
+
+		return null;
+	}
+
+	public static BitcoinSecret GetBitcoinSecret(this Key key, Network network, Script scriptPubKey)
+		=> GetBitcoinSecret(network, key, scriptPubKey);
+
+	public static BitcoinSecret GetBitcoinSecret(Network network, Key privateKey, Script scriptPubKey)
+	{
+		var derivedScriptPubKeyType = scriptPubKey switch
+		{
+			_ when scriptPubKey.IsScriptType(ScriptType.P2WPKH) => ScriptPubKeyType.Segwit,
+			_ when scriptPubKey.IsScriptType(ScriptType.Taproot) => ScriptPubKeyType.TaprootBIP86,
+			_ => throw new NotSupportedException("Not supported script type.")
+		};
+
+		if (privateKey.PubKey.GetScriptPubKey(derivedScriptPubKeyType) != scriptPubKey)
+		{
+			throw new InvalidOperationException("The key cannot generate the utxo scriptPubKey. This could happen if the wallet password is not the correct one.");
+		}
+
+		return privateKey.GetBitcoinSecret(network);
+	}
+
+	public static OwnershipProof GetOwnershipProof(Key masterKey, BitcoinSecret secret, Script scriptPubKey, CoinJoinInputCommitmentData commitmentData)
+	{
+		var identificationMasterKey = Slip21Node.FromSeed(masterKey.ToBytes());
+		var identificationKey = identificationMasterKey.DeriveChild("SLIP-0019")
+			.DeriveChild("Ownership identification key").Key;
+
+		var signingKey = secret.PrivateKey;
+		var ownershipProof = OwnershipProof.GenerateCoinJoinInputProof(
+			signingKey,
+			new OwnershipIdentifier(identificationKey, scriptPubKey),
+			commitmentData,
+			scriptPubKey.IsScriptType(ScriptType.P2WPKH)
+				? ScriptPubKeyType.Segwit
+				: ScriptPubKeyType.TaprootBIP86);
+
+		return ownershipProof;
+	}
+
+	/// <remarks>NBitcoin does not provide a try-parse method.</remarks>
+	public static bool TryParseBitcoinAddressForNetwork(string address, Network network, [NotNullWhen(true)] out BitcoinAddress? bitcoinAddress)
+	{
+		try
+		{
+			bitcoinAddress = Network.Parse<BitcoinAddress>(address, network);
+			return true;
+		}
+		catch
+		{
+			bitcoinAddress = null;
+			return false;
+		}
+	}
+
+	public static Money GetAdjustedFee(this FeeRate feeRate, int virtualSize)
+	{
+		var ceilFee = (long)Math.Ceiling(feeRate.SatoshiPerByte * virtualSize);
+		return Money.Satoshis(ceilFee);
+	}
+
+	extension(Node node)
+	{
+		public bool SupportsCompactFilters =>
+			node.PeerVersion?.Services.HasFlag(NodeServices.NODE_COMPACT_FILTERS) == true;
+
+		public bool SupportsNetwork =>
+			node.PeerVersion?.Services.HasFlag(NodeServices.Network) == true;
+
+		public bool SupportsNetworkLimited =>
+			node.PeerVersion?.Services.HasFlag(NodeServices.NODE_NETWORK_LIMITED) == true;
+
+		public bool CanServeBlocks =>
+			node.SupportsNetwork || node.SupportsNetworkLimited;
 	}
 }

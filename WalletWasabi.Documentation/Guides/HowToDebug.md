@@ -4,7 +4,7 @@ This guide is for giving detailed instructions about how to debug Wasabi Wallet 
 We will focus on how to achieve this with `vscode` first because that is the cross-platform IDE used by some of the developer team members.
 
 ## Before Starting
-We assume the reader has already read the project [README](https://github.com/zkSNACKs/WalletWasabi/blob/master/README.md) file and has installed the [.NET Core 3.1 SDK](https://www.microsoft.com/net/download), and knows how to clone the repository and build the Wasabi solution.
+We assume the reader has already read the project [README](https://github.com/WalletWasabi/WalletWasabi/blob/master/README.md) file and has installed the [.NET 10.0 SDK](https://dotnet.microsoft.com/download), and knows how to clone the repository and build the Wasabi solution.
 
 
 ## Install VS Code and C# extension
@@ -27,10 +27,8 @@ After this step we are ready to start configuring the build tasks and the launch
 
 ## Understanding the Wasabi components
 
-Wasabi Wallet is a client/server system where the client part is the Wasabi Wallet that users download and install on their machines, and the server part is the Wasabi backend that runs on the zkSNACKs servers.
-Additionally, the solution contains other components like the Packager used to prepare the Wasabi client to be distributed, integration tests, project, and others.
-
-Here we are going to focus first on how to debug the client component, and then the backend component.
+Wasabi Wallet is the desktop application that users download and install on their machines.
+Additionally, the solution contains other components like the Packager used to prepare the Wasabi client to be distributed, integration tests, and others.
 
 ### Wasabi Client
 
@@ -45,9 +43,9 @@ This file contains the list of projects that can be launched, how to do it, what
       "type": "coreclr",
       "request": "launch",
       "preLaunchTask": "build-client",
-      "program": "${workspaceFolder}/WalletWasabi.Gui/bin/Debug/netcoreapp3.1/WalletWasabi.Gui.dll",
+      "program": "${workspaceFolder}/WalletWasabi.Fluent.Desktop/bin/Debug/net8.0/WalletWasabi.Fluent.Desktop.dll",
       "args": [],
-      "cwd": "${workspaceFolder}/WalletWasabi.Gui",
+      "cwd": "${workspaceFolder}/WalletWasabi.Fluent.Desktop",
       "stopAtEntry": false,
       "internalConsoleOptions": "openOnSessionStart",
       "sourceFileMap": {
@@ -70,7 +68,7 @@ That is defined in the tasks file (it goes into `.vscode/tasks.json` file).
         "type": "process",
         "args": [
            "build",
-           "${workspaceFolder}/WalletWasabi.Gui/WalletWasabi.Gui.csproj"
+           "${workspaceFolder}/WalletWasabi.Fluent.Desktop/WalletWasabi.Fluent.Desktop.csproj"
         ],
         "problemMatcher": "$msCompile"
     }]
@@ -79,67 +77,6 @@ That is defined in the tasks file (it goes into `.vscode/tasks.json` file).
 
 After these two files are created press (CTRL+SHIFT+D) to go to the debugger, set a couple of breakpoints, select the `Wasabi GUI .NET Core` launcher (it should be the only one available) and press the play button.
 That is all.
-
-### Wasabi Backend
-
-In the same way we did with the client part, we need to create a launcher and a task for running and debugging the server-side component.
-Let us start with the launcher.
-Add the following launcher to the array of `configurations` in the `.vscode/launch.json` file.
-
-```json
-{
-   "name": "Wasabi Backend .NET Core",
-   "type": "coreclr",
-   "request": "launch",
-   "preLaunchTask": "build-backend",
-   "program": "${workspaceFolder}/WalletWasabi.Backend/bin/Debug/netcoreapp3.1/WalletWasabi.Backend.dll",
-   "args": [],
-   "cwd": "${workspaceFolder}/WalletWasabi.Backend",
-   "stopAtEntry": false,
-   "internalConsoleOptions": "openOnSessionStart",
-   "launchBrowser": {
-       "enabled": true,
-       "args": "${auto-detect-url}",
-       "windows": {
-           "command": "cmd.exe",
-           "args": "/C start ${auto-detect-url}"
-       },
-       "osx": {
-           "command": "open"
-       },
-       "linux": {
-           "command": "xdg-open"
-       }
-   },
-   "env": {
-       "ASPNETCORE_ENVIRONMENT": "Development"
-   },
-   "sourceFileMap": {
-       "/Views": "${workspaceFolder}/Views",
-        ".": "${workspaceFolder}"
-   }
-}
-```
-As before, we need to create a task for compiling the backend project before executing the code, and this is done again in the `.vscode/tasks.json` file.
-Add the following task to the array of tasks:
-
-```json
-{
-   "label": "build-backend",
-   "command": "dotnet",
-   "type": "process",
-   "args": [
-      "build",
-      "${workspaceFolder}/WalletWasabi.Backend/WalletWasabi.Backend.csproj"
-   ],
-   "problemMatcher": "$msCompile"
-}
-```
-
-And that is all.
-Once this has been done a developer can press (CTRL+SHIFT+D) to go to the debugger, set a couple of breakpoints, select the `Wasabi Backend .NET Core` launcher and press the play button to start debugging.
-
-
 
 ### Files
 
@@ -158,9 +95,9 @@ Once this has been done a developer can press (CTRL+SHIFT+D) to go to the debugg
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build-client",
-            "program": "${workspaceFolder}/WalletWasabi.Gui/bin/Debug/netcoreapp3.1/WalletWasabi.Gui.dll",
+            "program": "${workspaceFolder}/WalletWasabi.Fluent.Desktop/bin/Debug/net8.0/WalletWasabi.Fluent.Desktop.dll",
             "args": [],
-            "cwd": "${workspaceFolder}/WalletWasabi.Gui",
+            "cwd": "${workspaceFolder}/WalletWasabi.Fluent.Desktop",
             "stopAtEntry": false,
             "internalConsoleOptions": "openOnSessionStart",
             "sourceFileMap": {
@@ -168,43 +105,11 @@ Once this has been done a developer can press (CTRL+SHIFT+D) to go to the debugg
             }
         },
         {
-            "name": "Wasabi Backend .NET Core",
-            "type": "coreclr",
-            "request": "launch",
-            "preLaunchTask": "build-backend",
-            "program": "${workspaceFolder}/WalletWasabi.Backend/bin/Debug/netcoreapp3.1/WalletWasabi.Backend.dll",
-            "args": [],
-            "cwd": "${workspaceFolder}/WalletWasabi.Backend",
-            "stopAtEntry": false,
-            "internalConsoleOptions": "openOnSessionStart",
-            "launchBrowser": {
-                "enabled": true,
-                "args": "${auto-detect-url}",
-                "windows": {
-                    "command": "cmd.exe",
-                    "args": "/C start ${auto-detect-url}"
-                },
-                "osx": {
-                    "command": "open"
-                },
-                "linux": {
-                    "command": "xdg-open"
-                }
-            },
-            "env": {
-                "ASPNETCORE_ENVIRONMENT": "Development"
-            },
-            "sourceFileMap": {
-                "/Views": "${workspaceFolder}/Views",
-                ".": "${workspaceFolder}"
-            }
-        },
-        {
-            "name": "Wasabi Deamon .NET Core",
+            "name": "Wasabi Daemon .NET Core",
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build-client",
-            "program": "${workspaceFolder}/WalletWasabi.Gui/bin/Debug/netcoreapp3.1/WalletWasabi.Gui.dll",
+            "program": "${workspaceFolder}/WalletWasabi.Fluent.Desktop/bin/Debug/net8.0/WalletWasabi.Fluent.Desktop.dll",
             "args": [
                 "mix", "--wallet:TestNet"
             ],
@@ -250,22 +155,10 @@ Once this has been done a developer can press (CTRL+SHIFT+D) to go to the debugg
         "type": "process",
         "args": [
             "build",
-            "${workspaceFolder}/WalletWasabi.Gui/WalletWasabi.Gui.csproj",
+            "${workspaceFolder}/WalletWasabi.Fluent.Desktop/WalletWasabi.Fluent.Desktop.csproj",
             "/property:GenerateFullPaths=true",
             "/consoleloggerparameters:NoSummary"
             ],
-            "problemMatcher": "$msCompile"
-        },
-        {
-            "label": "build-backend",
-            "command": "dotnet",
-            "type": "process",
-            "args": [
-               "build",
-               "${workspaceFolder}/WalletWasabi.Backend/WalletWasabi.Backend.csproj",
-               "/property:GenerateFullPaths=true",
-               "/consoleloggerparameters:NoSummary"
-           ],
             "problemMatcher": "$msCompile"
         },
         {
@@ -287,7 +180,7 @@ Once this has been done a developer can press (CTRL+SHIFT+D) to go to the debugg
             "args": [
                 "watch",
                 "run",
-                "${workspaceFolder}/WalletWasabi.Gui/WalletWasabi.Gui.csproj",
+                "${workspaceFolder}/WalletWasabi.Fluent.Desktop/WalletWasabi.Fluent.Desktop.csproj",
                 "/property:GenerateFullPaths=true",
                 "/consoleloggerparameters:NoSummary"
             ],
@@ -300,22 +193,21 @@ Once this has been done a developer can press (CTRL+SHIFT+D) to go to the debugg
 ## Debugging code with unit tests
 
 Because `dotnet test` will run the test code in a child process, it isn't possible to configure a "unit test debugging" configuration in `launch.json`.
-You can tweak debugging options for unit tests by addind the followin setting to your local `.vscode/settings.json` file (if it doesn't exists then create it):
+You can tweak debugging options for unit tests by addind the following setting to your local `.vscode/settings.json` file (if it doesn't exists then create it):
 
 ```json
    "csharp.unitTestDebuggingOptions": {
         "sourceFileMap": {
             "WalletWasabi/": "${workspaceFolder}/WalletWasabi",
-            "WalletWasabi.Gui/": "${workspaceFolder}/WalletWasabi.Gui",
-            "WalletWasabi.Tests/": "${workspaceFolder}/WalletWasabi.Tests",
-            "WalletWasabi.Backend/": "${workspaceFolder}/WalletWasabi.Backend"
+            "WalletWasabi.Fluent.Desktop/": "${workspaceFolder}/WalletWasabi.Fluent.Desktop",
+            "WalletWasabi.Tests/": "${workspaceFolder}/WalletWasabi.Tests"
         }
     },
 ```
 
 ## How to setup and run the whole system
 
-Sometimes, as developers, we need to test an advanced interaction between the Bitcoin Core node, the Coordinator, and one or more Wasabi clients.
+Sometimes, as developers, we need to test an advanced interaction between the Bitcoin Core node and Wasabi clients.
 Just imagine a case in which we want to verify the system behavior after a blockchain reorg.
 In these cases we have to setup and run all the components, and use regtest.
 
@@ -323,17 +215,9 @@ In these cases we have to setup and run all the components, and use regtest.
 
 Download and install Bitcoin Core from [https://bitcoincore.org/bin/](https://bitcoincore.org/bin/).
 
-
-### Running the backend (coordinator)
-
-There is more than one way to do this:
-
-* From **VSCode** go to the Debug panel (CTRL+SHIFT+D), select `Wasabi Backend .NET Core` and press play.
-* From **Terminal** just type `dotnet run <WasabiProjectFolder>/WalletWasabi.Backend/WalletWasabi.Backend.csproj`
-
 ### Get some coins to test
 
-Once the Wasabi backend, the bitcoin node and the Wasabi client are running, we can mine some blocks and get the new mined coins into our Wasabi wallet.
+Once Bitcoin Core and the Wasabi client are running, we can mine some blocks and get the new mined coins into our Wasabi wallet.
 
 1. Go to Wasabi and generate a new address
 2. Open a terminal and type `bitcoin-cli -regtest generatetoaddress 101 <your-wasabi-address>`

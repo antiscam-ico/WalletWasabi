@@ -17,8 +17,6 @@
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/
-[Rr]elease/
-[Rr]eleases/
 x64/
 x86/
 bld/
@@ -267,11 +265,9 @@ __pycache__/
 # Coverlet
 lcov.info
 /WalletWasabi.Tests/coverage.json
-/WalletWasabi.Backend/wwwroot/unversioned/*
 
 \.DS_Store
 *.DS_Store
-/WalletWasabi.Backend/wwwroot/onion-index.html
 /NuGet.Config
 
 # WindowsInstaller generated files
@@ -280,3 +276,7 @@ lcov.info
 
 # This file is created by an F# VS Code plugin
 .ionide/symbolCache.db
+**/launchSettings.json
+build/
+result/
+.aider*

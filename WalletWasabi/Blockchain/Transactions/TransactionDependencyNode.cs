@@ -1,12 +1,11 @@
 using NBitcoin;
 using System.Collections.Generic;
 
-namespace WalletWasabi.Blockchain.Transactions
+namespace WalletWasabi.Blockchain.Transactions;
+
+public class TransactionDependencyNode(Transaction transaction)
 {
-	public class TransactionDependencyNode
-	{
-		public List<TransactionDependencyNode> Children { get; } = new List<TransactionDependencyNode>();
-		public List<TransactionDependencyNode> Parents { get; } = new List<TransactionDependencyNode>();
-		public Transaction Transaction { get; set; }
-	}
+	public Transaction Transaction { get; } = transaction;
+	public List<TransactionDependencyNode> Children { get; } = [];
+	public List<TransactionDependencyNode> Parents { get; } = [];
 }

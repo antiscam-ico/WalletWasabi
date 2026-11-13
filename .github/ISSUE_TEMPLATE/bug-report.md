@@ -1,35 +1,40 @@
 ---
 name: Bug Report
 about: Report a bug
-
+title: "[Bug]: "
+labels: ["bug", "untriaged"]
 ---
 
-### General Description
+### Before anything else
 
-A clear and concise description of what the bug is.
+Search for your error. By sure someone else found it before you: https://github.com/WalletWasabi/WalletWasabi/issues?q=is%3Aissue%20state%3Aclosed
+
+-------
+### Describe the issue
+
+<!-- A clear and concise description of what the bug is. -->
 
 ### How To Reproduce?
 
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
-
-### Screenshots
-
-If applicable, add screenshots to help explain your problem.
-
-### Operating System
-
-Please consider your privacy, before completing this section.  
-Example: Ubuntu 16.04
+<!-- What steps are required to reproduce it -->
 
 ### Logs
 
-Please consider your privacy, before completing this section.  
-You can find the log file by opening it from the main menu: `File/Open/Logs` File or `File/Open/TorLogs` File.
+Where to find the logs? https://docs.wasabiwallet.io/FAQ/FAQ-UseWasabi.html#where-can-i-find-the-logs
+
+```
+Insert Your Logs Here
+```
+
+### Screenshots
+
+<!-- If applicable, add screenshots to help explain your problem. -->
+
+### Operating System
+
+<!-- Example: Ubuntu 22.04.3 LTS -->
 
 ### Wasabi Version
 
-Which wasabi release are you using? Where did you download it from?  
-You can figure out which version you are using from the main menu: `Help/About` or with command line: `wassabee --version`.
+<!-- Which wasabi release are you using? Where did you download it from?
+You can figure out which version you are using by choosing `About Wasabi` from the dropdown menu in the search bar. -->

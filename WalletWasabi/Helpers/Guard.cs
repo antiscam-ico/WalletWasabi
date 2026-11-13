@@ -1,183 +1,117 @@
-using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 
-namespace WalletWasabi.Helpers
+namespace WalletWasabi.Helpers;
+
+public static class Guard
 {
-	public static class Guard
+	[return: NotNull]
+	public static T NotNull<T>(string parameterName, [NotNull] T? value)
 	{
-		public static bool True(string parameterName, bool? value, string? description = null)
-			=> AssertBool(parameterName, true, value, description);
+		AssertCorrectParameterName(parameterName);
+		return value ?? throw new ArgumentNullException(parameterName, "Parameter cannot be null.");
+	}
 
-		public static bool False(string parameterName, bool? value, string? description = null)
-			=> AssertBool(parameterName, false, value, description);
-
-		private static bool AssertBool(string parameterName, bool expectedValue, bool? value, string? description = null)
+	private static void AssertCorrectParameterName(string parameterName)
+	{
+		if (parameterName is null)
 		{
-			NotNull(parameterName, value);
-
-			if (value != expectedValue)
-			{
-				throw new ArgumentOutOfRangeException(parameterName, value, description ?? $"Parameter must be {expectedValue}.");
-			}
-
-			return (bool)value;
+			throw new ArgumentNullException(nameof(parameterName), "Parameter cannot be null.");
 		}
 
-		public static T NotNull<T>(string parameterName, T value)
+		if (parameterName.Length == 0)
 		{
-			AssertCorrectParameterName(parameterName);
-			return value ?? throw new ArgumentNullException(parameterName, "Parameter cannot be null.");
+			throw new ArgumentException("Parameter cannot be empty.", nameof(parameterName));
 		}
 
-		private static void AssertCorrectParameterName(string parameterName)
+		if (parameterName.Trim().Length == 0)
 		{
-			if (parameterName is null)
-			{
-				throw new ArgumentNullException(nameof(parameterName), "Parameter cannot be null.");
-			}
+			throw new ArgumentException("Parameter cannot be whitespace.", nameof(parameterName));
+		}
+	}
 
-			if (parameterName.Length == 0)
-			{
-				throw new ArgumentException("Parameter cannot be empty.", nameof(parameterName));
-			}
+	public static IEnumerable<T> NotNullOrEmpty<T>(string parameterName, IEnumerable<T> value)
+	{
+		NotNull(parameterName, value);
 
-			if (parameterName.Trim().Length == 0)
-			{
-				throw new ArgumentException("Parameter cannot be whitespace.", nameof(parameterName));
-			}
+		if (!value.Any())
+		{
+			throw new ArgumentException("Parameter cannot be empty.", parameterName);
 		}
 
-		public static T Same<T>(string parameterName, T expected, T actual)
+		return value;
+	}
+
+	public static string NotNullOrEmptyOrWhitespace(string parameterName, string value, bool trim = false)
+	{
+		NotNullOrEmpty(parameterName, value);
+
+		string trimmedValue = value.Trim();
+		if (trimmedValue.Length == 0)
 		{
-			AssertCorrectParameterName(parameterName);
-			NotNull(nameof(expected), expected);
-
-			if (!expected.Equals(actual))
-			{
-				throw new ArgumentException($"Parameter must be {expected}. Actual: {actual}.", parameterName);
-			}
-
-			return actual;
+			throw new ArgumentException("Parameter cannot be whitespace.", parameterName);
 		}
 
-		public static IEnumerable<T> NotNullOrEmpty<T>(string parameterName, IEnumerable<T> value)
+		if (trim)
 		{
-			NotNull(parameterName, value);
-
-			if (!value.Any())
-			{
-				throw new ArgumentException("Parameter cannot be empty.", parameterName);
-			}
-
+			return trimmedValue;
+		}
+		else
+		{
 			return value;
 		}
+	}
 
-		public static T[] NotNullOrEmpty<T>(string parameterName, T[] value)
+	public static T MinimumAndNotNull<T>(string parameterName, T value, T smallest) where T : IComparable
+	{
+		NotNull(parameterName, value);
+
+		if (value.CompareTo(smallest) < 0)
 		{
-			NotNull(parameterName, value);
-
-			if (!value.Any())
-			{
-				throw new ArgumentException("Parameter cannot be empty.", parameterName);
-			}
-
-			return value;
+			throw new ArgumentOutOfRangeException(parameterName, value, $"Parameter cannot be less than {smallest}.");
 		}
 
-		public static IDictionary<TKey, TValue> NotNullOrEmpty<TKey, TValue>(string parameterName, IDictionary<TKey, TValue> value)
+		return value;
+	}
+
+	public static IEnumerable<T> InRange<T>(string containerName, IEnumerable<T> container, int minCount, int maxCount)
+	{
+		var count = container.Count();
+		if (count < minCount || count > maxCount)
 		{
-			NotNull(parameterName, value);
-			if (!value.Any())
-			{
-				throw new ArgumentException("Parameter cannot be empty.", parameterName);
-			}
-			return value;
+			throw new ArgumentOutOfRangeException(containerName, count, $"{containerName}.Count() cannot be less than {minCount} or greater than {maxCount}.");
+		}
+		return container;
+	}
+
+	public static T InRangeAndNotNull<T>(string parameterName, T value, T smallest, T greatest) where T : IComparable
+	{
+		NotNull(parameterName, value);
+
+		if (value.CompareTo(smallest) < 0)
+		{
+			throw new ArgumentOutOfRangeException(parameterName, value, $"Parameter cannot be less than {smallest}.");
 		}
 
-		public static Dictionary<TKey, TValue> NotNullOrEmpty<TKey, TValue>(string parameterName, Dictionary<TKey, TValue> value)
+		if (value.CompareTo(greatest) > 0)
 		{
-			NotNull(parameterName, value);
-			if (!value.Any())
-			{
-				throw new ArgumentException("Parameter cannot be empty.", parameterName);
-			}
-			return value;
+			throw new ArgumentOutOfRangeException(parameterName, value, $"Parameter cannot be greater than {greatest}.");
 		}
 
-		public static string NotNullOrEmptyOrWhitespace(string parameterName, string value, bool trim = false)
-		{
-			NotNullOrEmpty(parameterName, value);
+		return value;
+	}
 
-			string trimmedValue = value.Trim();
-			if (trimmedValue.Length == 0)
-			{
-				throw new ArgumentException("Parameter cannot be whitespace.", parameterName);
-			}
-
-			if (trim)
-			{
-				return trimmedValue;
-			}
-			else
-			{
-				return value;
-			}
-		}
-
-		public static T MinimumAndNotNull<T>(string parameterName, T value, T smallest) where T : IComparable
-		{
-			NotNull(parameterName, value);
-
-			if (value.CompareTo(smallest) < 0)
-			{
-				throw new ArgumentOutOfRangeException(parameterName, value, $"Parameter cannot be less than {smallest}.");
-			}
-
-			return value;
-		}
-
-		public static T MaximumAndNotNull<T>(string parameterName, T value, T greatest) where T : IComparable
-		{
-			NotNull(parameterName, value);
-
-			if (value.CompareTo(greatest) > 0)
-			{
-				throw new ArgumentOutOfRangeException(parameterName, value, $"Parameter cannot be greater than {greatest}.");
-			}
-
-			return value;
-		}
-
-		public static T InRangeAndNotNull<T>(string parameterName, T value, T smallest, T greatest) where T : IComparable
-		{
-			NotNull(parameterName, value);
-
-			if (value.CompareTo(smallest) < 0)
-			{
-				throw new ArgumentOutOfRangeException(parameterName, value, $"Parameter cannot be less than {smallest}.");
-			}
-
-			if (value.CompareTo(greatest) > 0)
-			{
-				throw new ArgumentOutOfRangeException(parameterName, value, $"Parameter cannot be greater than {greatest}.");
-			}
-
-			return value;
-		}
-
-		/// <summary>
-		/// Corrects the string:
-		/// If the string is null, it'll be empty.
-		/// Trims the string.
-		/// </summary>
-		[return: NotNull]
-		public static string Correct(string? str)
-		{
-			return string.IsNullOrWhiteSpace(str)
-				? ""
-				: str.Trim();
-		}
+	/// <summary>
+	/// Corrects the string:
+	/// If the string is null, it'll be empty.
+	/// Trims the string.
+	/// </summary>
+	[return: NotNull]
+	public static string Correct(string? str)
+	{
+		return string.IsNullOrWhiteSpace(str)
+			? ""
+			: str.Trim();
 	}
 }

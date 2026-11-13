@@ -1,48 +1,20 @@
-using System.Net;
 using NBitcoin;
 using WalletWasabi.Helpers;
 
-namespace WalletWasabi.Models
+namespace WalletWasabi.Models;
+
+public class ServiceConfiguration
 {
-	public class ServiceConfiguration
+	public ServiceConfiguration(
+		Money dustThreshold,
+		int dropUnconfirmedTransactionsAfterDays = Constants.DefaultMaxDaysInMempool)
 	{
-		public ServiceConfiguration(
-			string mixUntilAnonymitySet,
-			int privacyLevelSome,
-			int privacyLevelFine,
-			int privacyLevelStrong,
-			EndPoint bitcoinCoreEndPoint,
-			Money dustThreshold)
-		{
-			MixUntilAnonymitySet = Guard.NotNull(nameof(mixUntilAnonymitySet), mixUntilAnonymitySet);
-			PrivacyLevelSome = Guard.NotNull(nameof(privacyLevelSome), privacyLevelSome);
-			PrivacyLevelFine = Guard.NotNull(nameof(privacyLevelFine), privacyLevelFine);
-			PrivacyLevelStrong = Guard.NotNull(nameof(privacyLevelStrong), privacyLevelStrong);
-			BitcoinCoreEndPoint = Guard.NotNull(nameof(bitcoinCoreEndPoint), bitcoinCoreEndPoint);
-			DustThreshold = Guard.NotNull(nameof(dustThreshold), dustThreshold);
-		}
+		ArgumentNullException.ThrowIfNull(dustThreshold);
 
-		public string MixUntilAnonymitySet { get; set; }
-		public int PrivacyLevelSome { get; set; }
-		public int PrivacyLevelFine { get; set; }
-		public int PrivacyLevelStrong { get; set; }
-		public EndPoint BitcoinCoreEndPoint { get; set; }
-		public Money DustThreshold { get; set; }
-
-		public int GetMixUntilAnonymitySetValue()
-		{
-			if (MixUntilAnonymitySet == Models.MixUntilAnonymitySet.PrivacyLevelSome.ToString())
-			{
-				return PrivacyLevelSome;
-			}
-			else if (MixUntilAnonymitySet == Models.MixUntilAnonymitySet.PrivacyLevelFine.ToString())
-			{
-				return PrivacyLevelFine;
-			}
-			else
-			{
-				return PrivacyLevelStrong;
-			}
-		}
+		DustThreshold = dustThreshold;
+		DropUnconfirmedTransactionsAfterDays = dropUnconfirmedTransactionsAfterDays;
 	}
+
+	public Money DustThreshold { get; set; }
+	public int DropUnconfirmedTransactionsAfterDays { get; }
 }

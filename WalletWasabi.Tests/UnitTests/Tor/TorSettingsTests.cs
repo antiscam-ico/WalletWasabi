@@ -1,33 +1,44 @@
-using System.Net;
-using System.Runtime.InteropServices;
+using System.IO;
 using WalletWasabi.Tor;
 using Xunit;
-using System.IO;
 
-namespace WalletWasabi.Tests.UnitTests.Tor
+namespace WalletWasabi.Tests.UnitTests.Tor;
+
+/// <summary>
+/// Tests for <see cref="TorSettings"/> class.
+/// </summary>
+public class TorSettingsTests
 {
-	/// <summary>
-	/// Tests for <see cref="Tor.TorSettings"/> class.
-	/// </summary>
-	public class TorSettingsTests
+	[Fact]
+	public void GetCmdArgumentsTest()
 	{
-		[Fact]
-		public void GetCmdArgumentsTest()
-		{
-			var settings = new TorSettings(Path.Combine("temp", "tempDataDir"), Path.Combine("temp", "Tor.log"), "tempDistributionDir");
-			var endpoint = new IPEndPoint(IPAddress.Loopback, WalletWasabi.Helpers.Constants.DefaultTorSocksPort);
+		string dataDir = Path.Combine("temp", "tempDataDir");
+		string distributionFolder = "tempDistributionDir";
 
-			string arguments = settings.GetCmdArguments(endpoint);
+		TorSettings settings = new(dataDir, distributionFolder, terminateOnExit: true, owningProcessId: 7);
 
-			string expected = string.Join(
-				" ",
-				$"--SOCKSPort 127.0.0.1:9050",
-				$"--DataDirectory \"{Path.Combine("temp", "tempDataDir", "tordata")}\"",
-				$"--GeoIPFile \"{Path.Combine("tempDistributionDir", "Tor", "Geoip", "geoip")}\"",
-				$"--GeoIPv6File \"{Path.Combine("tempDistributionDir", "Tor", "Geoip", "geoip6")}\"",
-				$"--Log \"notice file {Path.Combine("temp", "Tor.log")}\"");
+		string arguments = settings.GetCmdArguments();
 
-			Assert.Equal(expected, arguments);
-		}
+		string expected = string.Join(
+			" ",
+			$"--LogTimeGranularity 1",
+			$"--TruncateLogFile 1",
+			$"--UseBridges 0",
+			$"--SOCKSPort \"127.0.0.1:37150 ExtendedErrors KeepAliveIsolateSOCKSAuth\"",
+			$"--SocksTimeout 30",
+			$"--CookieAuthentication 1",
+			$"--ControlPort 37151",
+			$"--CookieAuthFile \"{Path.Combine("temp", "tempDataDir", "control_auth_cookie")}\"",
+			$"--DataDirectory \"{Path.Combine("temp", "tempDataDir", "tordata2")}\"",
+			$"--GeoIPFile \"{Path.Combine("tempDistributionDir", "Tor", "Geoip", "geoip")}\"",
+			$"--GeoIPv6File \"{Path.Combine("tempDistributionDir", "Tor", "Geoip", "geoip6")}\"",
+			$"--NumEntryGuards 3",
+			$"--NumPrimaryGuards 3",
+			$"--ConfluxEnabled 1",
+			$"--ConfluxClientUX throughput",
+			$"--Log \"notice file {Path.Combine("temp", "tempDataDir", "TorLogs.txt")}\"",
+			$"__OwningControllerProcess 7");
+
+		Assert.Equal(expected, arguments);
 	}
 }

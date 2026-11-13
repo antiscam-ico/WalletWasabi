@@ -1,49 +1,64 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<PlatformTarget>x64</PlatformTarget>
-		<TargetFramework>netcoreapp3.1</TargetFramework>
+		<DisableImplicitNamespaceImports>true</DisableImplicitNamespaceImports>
 		<IsPackable>false</IsPackable>
-		<LangVersion>latest</LangVersion>
-		<NoWarn>1701;1702;1705;1591;CA1031</NoWarn>
-		<ApplicationIcon />
-		<OutputType>Library</OutputType>
-		<StartupObject />
+		<NoWarn>1701;1702;1705;1591;CA1031;CA1822</NoWarn>
+		<OutputType>Exe</OutputType>
 		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
-		<Nullable>enable</Nullable>
-		<RuntimeIdentifiers>win7-x64;linux-x64;osx-x64</RuntimeIdentifiers>
-		<PathMap>$(MSBuildProjectDirectory)\=WalletWasabi.Tests</PathMap>
+
+		<!-- https://xunit.net/docs/getting-started/v3/microsoft-testing-platform -->
+		<UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+		<TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
 	</PropertyGroup>
 
 	<ItemGroup>
-		<PackageReference Include="coverlet.collector" Version="1.3.0">
+		<PackageReference Include="coverlet.collector">
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
 			<PrivateAssets>all</PrivateAssets>
 		</PackageReference>
-		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="16.7.1" />
-		<PackageReference Include="xunit" Version="2.4.1" />
-		<PackageReference Include="xunit.runner.visualstudio" Version="2.4.3">
-			<PrivateAssets>all</PrivateAssets>
-			<IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
-		</PackageReference>
-		<DotNetCliToolReference Include="dotnet-xunit" Version="2.3.1" />
+		<PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+		<PackageReference Include="Microsoft.CodeAnalysis.Common" />
+		<PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+		<PackageReference Include="xunit.v3" />
 	</ItemGroup>
 
 	<ItemGroup>
-		<ProjectReference Include="..\WalletWasabi.Backend\WalletWasabi.Backend.csproj" />
-		<ProjectReference Include="..\WalletWasabi.Gui\WalletWasabi.Gui.csproj" />
-		<ProjectReference Include="..\WalletWasabi.Packager\WalletWasabi.Packager.csproj" />
+		<ProjectReference Include="..\WalletWasabi.Coordinator\WalletWasabi.Coordinator.csproj" />
+		<ProjectReference Include="..\WalletWasabi.Fluent.Generators\WalletWasabi.Fluent.Generators.csproj" />
+		<ProjectReference Include="..\WalletWasabi.Fluent\WalletWasabi.Fluent.csproj" />
 		<ProjectReference Include="..\WalletWasabi\WalletWasabi.csproj" />
 	</ItemGroup>
 
 	<ItemGroup>
-		<None Update="xunit.runner.json">
+		<None Update="UnitTests\QrDecode\QrResources\AddressTest1.png">
 			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
+		</None>
+		<None Update="UnitTests\QrDecode\QrResources\AddressTest2.png">
+			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
+		</None>
+		<None Update="UnitTests\QrDecode\QrResources\qr-embed-logos.png">
+			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
+		</None>
+		<None Update="UnitTests\QrDecode\QrResources\QrByPhone.jpg">
+			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
+		</None>
+		<None Update="UnitTests\QrDecode\QrResources\QRwithZebraBackground.png">
+			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
+		</None>
+		<None Update="UnitTests\Data\Slip39TestVectors.json">
+		  <CopyToOutputDirectory>Always</CopyToOutputDirectory>
 		</None>
 	</ItemGroup>
 
 	<ItemGroup>
 		<None Update="./UnitTests/Data/StrobeTestVectors.json">
+			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
+		</None>
+		<None Update="./UnitTests/Data/VerboseBlock.json">
+			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
+		</None>
+		<None Update="UnitTests\Data\SilentPaymentTestVectors.json">
 			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
 		</None>
 	</ItemGroup>

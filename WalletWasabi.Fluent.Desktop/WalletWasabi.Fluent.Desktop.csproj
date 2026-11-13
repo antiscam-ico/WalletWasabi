@@ -1,51 +1,52 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
 	<PropertyGroup>
+		<DisableImplicitNamespaceImports>true</DisableImplicitNamespaceImports>
+		<NoWarn>1701;1702;1705;1591;1573;CA1031;CA1822</NoWarn>
+		<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+		<DisableImplicitNuGetFallbackFolder>true</DisableImplicitNuGetFallbackFolder>
+		<RuntimeIdentifiers>win-x64;linux-x64;linux-arm64;osx-x64;osx-arm64</RuntimeIdentifiers>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+		<OutputType>Exe</OutputType>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
 		<OutputType>WinExe</OutputType>
-		<TargetFramework>netcoreapp3.1</TargetFramework>
-		<Nullable>enable</Nullable>
-		<LangVersion>latest</LangVersion>
-		<NoWarn>1701;1702;1705;1591;1573;CA1031</NoWarn>
 	</PropertyGroup>
 
 	<PropertyGroup>
-		<Authors>nopara73;lontivero;danwalmsley</Authors>
-		<Company>zkSNACKs</Company>
 		<NeutralLanguage>en-US</NeutralLanguage>
-		<AssemblyTitle>Wasabi Wallet Fluent</AssemblyTitle>
+		<AssemblyTitle>Wasabi Wallet</AssemblyTitle>
 		<Description>
-			Open-source, non-custodial, privacy focused Bitcoin wallet for Windows, Linux, and Mac. Built-in Tor, CoinJoin, PayJoin and coin control features.
+			Open-source, non-custodial, privacy focused Bitcoin wallet for Windows, Linux, and Mac. Built-in Tor, coinjoin, and coin control features.
 		</Description>
 		<Copyright>MIT</Copyright>
-		<PackageId>Wasabi Wallet Fluent</PackageId>
-		<AssemblyTitle>Privacy focused Bitcoin wallet.</AssemblyTitle>
-		<Company>zkSNACKs</Company>
-		<PackageTags>bitcoin-wallet;privacy;bitcoin;dotnet;nbitcoin;cross-platform;zerolink;wallet;tumbler;coin;tor</PackageTags>
-		<PackageProjectUrl>https://github.com/zkSNACKs/WalletWasabi/</PackageProjectUrl>
-		<PackageLicenseUrl>https://github.com/zkSNACKs/WalletWasabi/blob/master/LICENSE.md</PackageLicenseUrl>
+		<PackageTags>bitcoin-wallet;privacy;bitcoin;dotnet;nbitcoin;cross-platform;zerolink;wallet;wabisabi;coinjoin;tor</PackageTags>
+		<PackageProjectUrl>https://github.com/WalletWasabi/WalletWasabi/</PackageProjectUrl>
+		<PackageLicenseUrl>https://github.com/WalletWasabi/WalletWasabi/blob/master/LICENSE.md</PackageLicenseUrl>
 		<RepositoryType>git</RepositoryType>
-		<RepositoryUrl>https://github.com/zkSNACKs/WalletWasabi/</RepositoryUrl>
+		<RepositoryUrl>https://github.com/WalletWasabi/WalletWasabi/</RepositoryUrl>
 		<ApplicationIcon>Assets\WasabiLogo.ico</ApplicationIcon>
 		<PackageIcon>Assets\WasabiLogo.ico</PackageIcon>
-		<Product>Wasabi Wallet Fluent</Product>
+		<Product>Wasabi Wallet</Product>
 		<!-- owners is not supported in MSBuild -->
 	</PropertyGroup>
 
 	<ItemGroup>
-		<Compile Update="**\*.xaml.cs">
-			<DependentUpon>%(Filename)</DependentUpon>
-		</Compile>
-		<AvaloniaResource Include="**\*.xaml">
-			<SubType>Designer</SubType>
-		</AvaloniaResource>
 		<AvaloniaResource Include="Assets\**" />
 	</ItemGroup>
 	<ItemGroup>
-		<PackageReference Include="Avalonia.Desktop" Version="0.10.999-cibuild0011763-beta" />
-		<PackageReference Include="Avalonia.ReactiveUI" Version="0.10.999-cibuild0011763-beta" />
+		<PackageReference Include="Avalonia.Desktop" />
+		<PackageReference Include="ReactiveUI.Avalonia" />
 	</ItemGroup>
 	<ItemGroup>
 		<ProjectReference Include="..\WalletWasabi.Fluent\WalletWasabi.Fluent.csproj" />
-		<ProjectReference Include="..\WalletWasabi.Gui\WalletWasabi.Gui.csproj" />
 		<ProjectReference Include="..\WalletWasabi\WalletWasabi.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<RuntimeHostConfigurationOption Include="System.Globalization.Invariant" Value="true" />
 	</ItemGroup>
 </Project>

@@ -1,35 +1,23 @@
-// Copyright (c) The Avalonia Project. All rights reserved.
-// Licensed under the MIT license. See licence.md file in the project root for full license information.
-
-using System;
 using Avalonia.Controls;
 using Avalonia.Controls.Templates;
-using WalletWasabi.Gui.ViewModels;
+using WalletWasabi.Fluent.ViewModels;
 
-namespace WalletWasabi.Fluent
+namespace WalletWasabi.Fluent;
+
+[StaticViewLocator]
+public partial class ViewLocator : IDataTemplate
 {
-	public class ViewLocator : IDataTemplate
+	public Control Build(object? data)
 	{
-		public bool SupportsRecycling => false;
+		var type = data?.GetType();
 
-		public IControl Build(object data)
+		if (type is not null && s_views.TryGetValue(type, out var func))
 		{
-			var name = data.GetType().FullName.Replace("ViewModel", "View");
-			var type = Type.GetType(name);
-
-			if (type != null)
-			{
-				return (Control)Activator.CreateInstance(type);
-			}
-			else
-			{
-				return new TextBlock { Text = "Not Found: " + name };
-			}
+			return func.Invoke();
 		}
 
-		public bool Match(object data)
-		{
-			return data is ViewModelBase;
-		}
+		throw new Exception($"Unable to create view for type: {type}");
 	}
+
+	public bool Match(object? data) => data is ViewModelBase;
 }

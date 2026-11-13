@@ -1,32 +1,31 @@
 using NBitcoin;
-using Newtonsoft.Json;
-using WalletWasabi.JsonConverters;
-using WalletWasabi.Models;
+using WalletWasabi.Blockchain.BlockFilters;
 
-namespace WalletWasabi.Blockchain.Keys
+namespace WalletWasabi.Blockchain.Keys;
+
+public class BlockchainState
 {
-	[JsonObject(MemberSerialization.OptIn)]
-	public class BlockchainState
+	public BlockchainState(Network? network = null, ChainHeight? height = null, ChainHeight? birthHeight = null)
 	{
-		[JsonConstructor]
-		public BlockchainState(Network network, Height height)
-		{
-			Network = network;
-			Height = height;
-		}
-
-		public BlockchainState()
-		{
-			Network = Network.Main;
-			Height = 0;
-		}
-
-		[JsonProperty]
-		[JsonConverter(typeof(NetworkJsonConverter))]
-		public Network Network { get; set; }
-
-		[JsonProperty]
-		[JsonConverter(typeof(HeightJsonConverter))]
-		public Height Height { get; set; }
+		Network = network ?? Network.Main;
+		Height = height ?? ChainHeight.Genesis;
+		BirthHeight = birthHeight;
 	}
+
+	public Network Network { get; }
+
+	private ChainHeight _height = ChainHeight.Genesis;
+
+	/// <summary>Height of the last processed filter.</summary>
+	/// <remarks>
+	/// Never precedes the first filter we have, otherwise the wallet would ask for the filter right
+	/// after it and that filter cannot be fetched.
+	/// </remarks>
+	public ChainHeight Height
+	{
+		get => _height;
+		set => _height = ChainHeight.Max(value, FilterCheckpoints.GetWasabiGenesisFilter(Network).Header.Height);
+	}
+
+	public ChainHeight? BirthHeight { get; }
 }

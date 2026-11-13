@@ -1,32 +1,68 @@
 using NBitcoin;
 using WalletWasabi.Blockchain.Analysis.Clustering;
-using WalletWasabi.Helpers;
+using WalletWasabi.Wallets.SilentPayment;
 
-namespace WalletWasabi.Blockchain.TransactionBuilding
+namespace WalletWasabi.Blockchain.TransactionBuilding;
+
+public abstract record Destination
 {
-	public class DestinationRequest
+	public static implicit operator Destination(BitcoinAddress address) => new Loudly(address.ScriptPubKey);
+	public static implicit operator Destination(Script scriptPubKey) => new Loudly(scriptPubKey);
+
+	public string ToString(Network network) =>
+		this switch
+		{
+			Loudly l when l.ScriptPubKey.GetDestinationAddress(network) is {} addr => addr.ToString(),
+			Silent s => s.Address.ToWip(network),
+			_ => throw new ArgumentException("Unknown destination type")
+		};
+
+	public Script GetScriptPubKey() =>
+		this switch
+		{
+			Loudly l => l.ScriptPubKey,
+			Silent s => s.FakeScriptPubKey,
+			_ => throw new ArgumentException("Unknown destination type")
+		};
+
+	public record Loudly(Script ScriptPubKey) : Destination;
+
+	public record Silent(SilentPaymentAddress Address) : Destination
 	{
-		public DestinationRequest(Script scriptPubKey, Money amount, bool subtractFee = false, SmartLabel label = null) : this(scriptPubKey, MoneyRequest.Create(amount, subtractFee), label)
-		{
-		}
+		public Script FakeScriptPubKey =>
+			new PubKey(Address.ScanKey.AddTweak(Address.SpendKey.ToXOnlyPubKey().ToBytes()).ToBytes()).GetScriptPubKey(
+				ScriptPubKeyType.TaprootBIP86);
+	};
+}
 
-		public DestinationRequest(Script scriptPubKey, MoneyRequest amount, SmartLabel label = null) : this(scriptPubKey.GetDestination(), amount, label)
-		{
-		}
-
-		public DestinationRequest(IDestination destination, Money amount, bool subtractFee = false, SmartLabel label = null) : this(destination, MoneyRequest.Create(amount, subtractFee), label)
-		{
-		}
-
-		public DestinationRequest(IDestination destination, MoneyRequest amount, SmartLabel label = null)
-		{
-			Destination = Guard.NotNull(nameof(destination), destination);
-			Amount = Guard.NotNull(nameof(amount), amount);
-			Label = label ?? SmartLabel.Empty;
-		}
-
-		public IDestination Destination { get; }
-		public MoneyRequest Amount { get; }
-		public SmartLabel Label { get; }
+public class DestinationRequest(Destination destination, MoneyRequest amount, LabelsArray? labels = null)
+{
+	public DestinationRequest(Script scriptPubKey, Money amount, bool subtractFee = false, LabelsArray? labels = null)
+		: this(scriptPubKey, MoneyRequest.Create(amount, subtractFee), labels)
+	{
 	}
+
+	public DestinationRequest(Script scriptPubKey, MoneyRequest amount, LabelsArray? labels = null)
+		: this(new Destination.Loudly(scriptPubKey), amount, labels)
+	{
+	}
+
+	public DestinationRequest(IDestination destination, Money amount, bool subtractFee = false, LabelsArray? labels = null)
+		: this(new Destination.Loudly(destination.ScriptPubKey), MoneyRequest.Create(amount, subtractFee), labels)
+	{
+	}
+
+	public DestinationRequest(IDestination destination, MoneyRequest amount, LabelsArray? labels = null)
+		: this(new Destination.Loudly(destination.ScriptPubKey), amount, labels)
+	{
+	}
+
+	public DestinationRequest(SilentPaymentAddress silentPaymentAddress, MoneyRequest amount, LabelsArray? labels = null)
+		: this(new Destination.Silent(silentPaymentAddress), amount, labels)
+	{
+	}
+
+	public Destination Destination { get; } = destination;
+	public MoneyRequest Amount { get; } = amount;
+	public LabelsArray Labels { get; } = labels ?? LabelsArray.Empty;
 }

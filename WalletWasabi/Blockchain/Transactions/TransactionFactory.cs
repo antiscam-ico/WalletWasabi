@@ -1,352 +1,471 @@
-using NBitcoin;
 using NBitcoin.Policy;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net.Http;
-using System.Threading;
 using WalletWasabi.Blockchain.Analysis.Clustering;
-using WalletWasabi.Blockchain.Keys;
 using WalletWasabi.Blockchain.TransactionBuilding;
-using WalletWasabi.Blockchain.TransactionOutputs;
 using WalletWasabi.Exceptions;
-using WalletWasabi.Helpers;
-using WalletWasabi.Logging;
-using WalletWasabi.Models;
-using WalletWasabi.Tor.Exceptions;
-using WalletWasabi.WebClients.PayJoin;
+using WalletWasabi.Wallets.SilentPayment;
 
-namespace WalletWasabi.Blockchain.Transactions
+namespace WalletWasabi.Blockchain.Transactions;
+
+public class TransactionFactory
 {
-	public class TransactionFactory
+	public TransactionFactory(Network network, KeyManager keyManager, ICoinsView coins, ITransactionStore transactionStore, string password = "")
 	{
-		/// <param name="allowUnconfirmed">Allow to spend unconfirmed transactions, if necessary.</param>
-		public TransactionFactory(Network network, KeyManager keyManager, ICoinsView coins, AllTransactionStore transactionStore, string password = "", bool allowUnconfirmed = false)
+		Network = network;
+		KeyManager = keyManager;
+		Coins = coins;
+		_transactionStore = transactionStore;
+		_password = password;
+	}
+
+	public Network Network { get; }
+	public KeyManager KeyManager { get; }
+	public ICoinsView Coins { get; }
+	private readonly string _password;
+	private readonly ITransactionStore _transactionStore;
+
+	public BuildTransactionResult BuildTransaction(
+		TransactionParameters parameters,
+		Func<LockTime>? lockTimeSelector = null)
+	{
+		lockTimeSelector ??= () => LockTime.Zero;
+
+		var payments = parameters.PaymentIntent;
+		long totalAmount = payments.TotalAmount.Satoshi;
+		if (totalAmount is < 0 or > Constants.MaximumNumberOfSatoshis)
 		{
-			Network = Guard.NotNull(nameof(network), network);
-			KeyManager = Guard.NotNull(nameof(keyManager), keyManager);
-			Coins = Guard.NotNull(nameof(coins), coins);
-			TransactionStore = Guard.NotNull(nameof(transactionStore), transactionStore);
-			Password = password;
-			AllowUnconfirmed = allowUnconfirmed;
+			throw new ArgumentOutOfRangeException($"{nameof(payments)}.{nameof(payments.TotalAmount)} sum cannot be smaller than 0 or greater than {Constants.MaximumNumberOfSatoshis}.");
 		}
 
-		public Network Network { get; }
-		public KeyManager KeyManager { get; }
-		public ICoinsView Coins { get; }
-		public string Password { get; }
-		public bool AllowUnconfirmed { get; }
-		private AllTransactionStore TransactionStore { get; }
-
-		/// <exception cref="ArgumentException"></exception>
-		/// <exception cref="ArgumentNullException"></exception>
-		/// <exception cref="ArgumentOutOfRangeException"></exception>
-		public BuildTransactionResult BuildTransaction(
-			PaymentIntent payments,
-			FeeRate feeRate,
-			IEnumerable<OutPoint> allowedInputs = null,
-			IPayjoinClient payjoinClient = null)
-			=> BuildTransaction(payments, () => feeRate, allowedInputs, () => LockTime.Zero, payjoinClient);
-
-		/// <exception cref="ArgumentException"></exception>
-		/// <exception cref="ArgumentNullException"></exception>
-		/// <exception cref="ArgumentOutOfRangeException"></exception>
-		public BuildTransactionResult BuildTransaction(
-			PaymentIntent payments,
-			Func<FeeRate> feeRateFetcher,
-			IEnumerable<OutPoint> allowedInputs = null,
-			Func<LockTime> lockTimeSelector = null,
-			IPayjoinClient payjoinClient = null)
+		var isSilentPayment = payments.Requests.Select(x => x.Destination).OfType<Destination.Silent>().Any();
+		var canUsePrivateKeys = !KeyManager.IsWatchOnly;
+		if (isSilentPayment && !canUsePrivateKeys)
 		{
-			payments = Guard.NotNull(nameof(payments), payments);
-			lockTimeSelector ??= () => LockTime.Zero;
+			throw new InvalidOperationException("Silent payments requires a hot wallet.");
+		}
 
-			long totalAmount = payments.TotalAmount.Satoshi;
-			if (totalAmount < 0 || totalAmount > Constants.MaximumNumberOfSatoshis)
+		// Get allowed coins to spend.
+		var availableCoinsView = Coins.Unspent();
+		if (parameters.AllowDoubleSpend && parameters.AllowedInputs is not null)
+		{
+			var doubleSpends = new List<SmartCoin>();
+			foreach (var input in parameters.AllowedInputs)
 			{
-				throw new ArgumentOutOfRangeException($"{nameof(payments)}.{nameof(payments.TotalAmount)} sum cannot be smaller than 0 or greater than {Constants.MaximumNumberOfSatoshis}.");
+				if (((CoinsRegistry)Coins).AsAllCoinsView().TryGetByOutPoint(input, out var coin)
+					&& coin.SpenderTransaction is not null
+					&& !coin.SpenderTransaction.Confirmed)
+				{
+					doubleSpends.Add(coin);
+				}
+			}
+			availableCoinsView = new CoinsView(availableCoinsView.ToList().Concat(doubleSpends));
+		}
+
+		List<SmartCoin> allowedSmartCoinInputs = parameters.AllowUnconfirmed // Inputs that can be used to build the transaction.
+			? availableCoinsView.ToList()
+			: availableCoinsView.Confirmed().ToList();
+		if (parameters.AllowedInputs is not null) // If allowedInputs are specified then select the coins from them.
+		{
+			if (!parameters.AllowedInputs.Any())
+			{
+				throw new ArgumentException($"{nameof(parameters.AllowedInputs)} is not null, but empty.");
 			}
 
-			// Get allowed coins to spend.
-			var availableCoinsView = Coins.Available();
-			List<SmartCoin> allowedSmartCoinInputs = AllowUnconfirmed // Inputs that can be used to build the transaction.
-					? availableCoinsView.ToList()
-					: availableCoinsView.Confirmed().ToList();
-			if (allowedInputs is { }) // If allowedInputs are specified then select the coins from them.
+			allowedSmartCoinInputs = allowedSmartCoinInputs
+				.Where(x => parameters.AllowedInputs.Any(y => y.Hash == x.TransactionId && y.N == x.Index))
+				.ToList();
+
+			// Add those that have the same script, because common ownership is already exposed.
+			// But only if the user didn't click the "max" button. In this case he'd send more money than what he'd think.
+			if (payments.ChangeStrategy != ChangeStrategy.AllRemainingCustom)
 			{
-				if (!allowedInputs.Any())
+				var allScripts = allowedSmartCoinInputs.Select(x => x.ScriptPubKey).ToHashSet();
+				foreach (var coin in availableCoinsView.Where(x => !allowedSmartCoinInputs.Any(y => x.TransactionId == y.TransactionId && x.Index == y.Index)))
 				{
-					throw new ArgumentException($"{nameof(allowedInputs)} is not null, but empty.");
-				}
-
-				allowedSmartCoinInputs = allowedSmartCoinInputs
-					.Where(x => allowedInputs.Any(y => y.Hash == x.TransactionId && y.N == x.Index))
-					.ToList();
-
-				// Add those that have the same script, because common ownership is already exposed.
-				// But only if the user didn't click the "max" button. In this case he'd send more money than what he'd think.
-				if (payments.ChangeStrategy != ChangeStrategy.AllRemainingCustom)
-				{
-					var allScripts = allowedSmartCoinInputs.Select(x => x.ScriptPubKey).ToHashSet();
-					foreach (var coin in availableCoinsView.Where(x => !allowedSmartCoinInputs.Any(y => x.TransactionId == y.TransactionId && x.Index == y.Index)))
+					if (!(parameters.AllowUnconfirmed || coin.Confirmed))
 					{
-						if (!(AllowUnconfirmed || coin.Confirmed))
-						{
-							continue;
-						}
+						continue;
+					}
 
-						if (allScripts.Contains(coin.ScriptPubKey))
-						{
-							allowedSmartCoinInputs.Add(coin);
-						}
+					if (allScripts.Contains(coin.ScriptPubKey))
+					{
+						allowedSmartCoinInputs.Add(coin);
 					}
 				}
 			}
+		}
 
-			// Get and calculate fee
-			Logger.LogInfo("Calculating dynamic transaction fee...");
+		var builder = new TransactionBuilderWithSilentPaymentSupport(Network);
+		builder.SetCoinSelector(new SmartCoinSelector(allowedSmartCoinInputs));
+		builder.AddCoins(allowedSmartCoinInputs.Select(c => c.Coin));
+		builder.SetLockTime(lockTimeSelector());
 
-			TransactionBuilder builder = Network.CreateTransactionBuilder();
-			builder.SetCoinSelector(new SmartCoinSelector(allowedSmartCoinInputs));
-			builder.AddCoins(allowedSmartCoinInputs.Select(c => c.GetCoin()));
-			builder.SetLockTime(lockTimeSelector());
-
-			foreach (var request in payments.Requests.Where(x => x.Amount.Type == MoneyRequestType.Value))
+		foreach (var request in payments.Requests.Where(x => x.Amount is MoneyRequest.Value).Select(x => (x.Destination, Amount: (MoneyRequest.Value)x.Amount, x.Amount.SubtractFee)))
+		{
+			builder.Send(request.Destination, request.Amount.Amount);
+			if (request.SubtractFee)
 			{
-				var amountRequest = request.Amount;
-
-				builder.Send(request.Destination, amountRequest.Amount);
-				if (amountRequest.SubtractFee)
-				{
-					builder.SubtractFees();
-				}
+				builder.SubtractFees();
 			}
+		}
 
-			HdPubKey changeHdPubKey = null;
+		HdPubKey? changeHdPubKey;
 
-			if (payments.TryGetCustomRequest(out DestinationRequest custChange))
+		if (payments.TryGetCustomRequest(out DestinationRequest? customChange))
+		{
+			var changeScript = customChange.Destination.GetScriptPubKey();
+			KeyManager.TryGetKeyForScriptPubKey(changeScript, out HdPubKey? hdPubKey);
+			changeHdPubKey = hdPubKey;
+
+			var changeStrategy = payments.ChangeStrategy;
+			if (changeStrategy == ChangeStrategy.Custom)
 			{
-				var changeScript = custChange.Destination.ScriptPubKey;
-				changeHdPubKey = KeyManager.GetKeyForScriptPubKey(changeScript);
-
-				var changeStrategy = payments.ChangeStrategy;
-				if (changeStrategy == ChangeStrategy.Custom)
-				{
-					builder.SetChange(changeScript);
-				}
-				else if (changeStrategy == ChangeStrategy.AllRemainingCustom)
-				{
-					builder.SendAllRemaining(changeScript);
-				}
-				else
-				{
-					throw new NotSupportedException(payments.ChangeStrategy.ToString());
-				}
+				builder.SetChange(customChange.Destination);
+			}
+			else if (changeStrategy == ChangeStrategy.AllRemainingCustom)
+			{
+				builder.SendAllRemaining(customChange.Destination);
 			}
 			else
 			{
-				KeyManager.AssertCleanKeysIndexed(isInternal: true);
-				KeyManager.AssertLockedInternalKeysIndexed(14);
-				changeHdPubKey = KeyManager.GetKeys(KeyState.Clean, true).FirstOrDefault();
-
-				builder.SetChange(changeHdPubKey.P2wpkhScript);
+				throw new NotSupportedException(payments.ChangeStrategy.ToString());
 			}
+		}
+		else
+		{
+			changeHdPubKey = KeyManager.GetNextChangeKey();
 
-			builder.OptInRBF = new Random().NextDouble() < Constants.TransactionRBFSignalRate;
+			builder.SetChange(changeHdPubKey.GetAssumedScriptPubKey());
+		}
 
-			FeeRate feeRate = feeRateFetcher();
-			builder.SendEstimatedFees(feeRate);
+		builder.SendEstimatedFees(parameters.FeeRate);
 
-			var psbt = builder.BuildPSBT(false);
+		var psbt = builder.BuildPSBT(false);
 
-			var spentCoins = psbt.Inputs.Select(txin => allowedSmartCoinInputs.First(y => y.OutPoint == txin.PrevOut)).ToArray();
+		// For sub-1 sat/vB fee rates, NBitcoin's FeeRate truncates because _FeePerK is a long
+		// (e.g. 0.1 sat/vB × 141 vB = 14.1 -> 14 sats -> effective 0.099 sat/vB).
+		// Rebuild with a FeeRate whose _FeePerK is ceiled to guarantee the fee covers the target.
+		if (parameters.FeeRate.SatoshiPerByte < 1m && psbt.TryGetVirtualSize(out var estimatedVSize))
+		{
+			var adjustedFee = parameters.FeeRate.GetAdjustedFee(estimatedVSize);
+			var truncatedFee = parameters.FeeRate.GetFee(estimatedVSize);
+			if (truncatedFee < adjustedFee)
+			{
+				var ceilFeePerK = (long)Math.Ceiling(adjustedFee.Satoshi * 1000m / estimatedVSize);
+				builder.SendEstimatedFees(new FeeRate(Money.Satoshis(ceilFeePerK)));
+				psbt = builder.BuildPSBT(false);
+			}
+		}
 
-			var realToSend = payments.Requests
-				.Select(t =>
-					(label: t.Label,
+		var spentCoins = psbt.Inputs.Select(txin => allowedSmartCoinInputs.First(y => y.Outpoint == txin.PrevOut)).ToArray();
+
+		var realToSend = payments.Requests
+			.Select(t =>
+				(label: t.Labels,
 					destination: t.Destination,
-					amount: psbt.Outputs.FirstOrDefault(o => o.ScriptPubKey == t.Destination.ScriptPubKey)?.Value))
-				.Where(i => i.amount is { });
+					amount: psbt.Outputs.FirstOrDefault(o => o.ScriptPubKey == t.Destination.GetScriptPubKey())?.Value))
+			.Where(x => x.amount is not null);
 
-			if (!psbt.TryGetFee(out var fee))
-			{
-				throw new InvalidOperationException("Impossible to get the fees of the PSBT, this should never happen.");
-			}
-			Logger.LogInfo($"Fee: {fee.Satoshi} Satoshi.");
+		if (!psbt.TryGetFee(out var fee))
+		{
+			throw new InvalidOperationException("Impossible to get the fees of the PSBT, this should never happen.");
+		}
 
-			var vSize = builder.EstimateSize(psbt.GetOriginalTransaction(), true);
-			Logger.LogInfo($"Estimated tx size: {vSize} vBytes.");
+		if (!psbt.TryGetVirtualSize(out var vSize)) //builder.EstimateSize(psbt.ExtractTransaction(), true);
+		{
+			throw new InvalidOperationException("It was not possible to estimate the size of the transaction");
+		}
 
-			// Do some checks
-			Money totalSendAmountNoFee = realToSend.Sum(x => x.amount);
-			if (totalSendAmountNoFee == Money.Zero)
-			{
-				throw new InvalidOperationException("The amount after subtracting the fee is too small to be sent.");
-			}
+		// Do some checks
+		Money totalSendAmountNoFee = realToSend.Sum(x => x.amount);
+		if (totalSendAmountNoFee == Money.Zero)
+		{
+			throw new InvalidOperationException("The amount after subtracting the fee is too small to be sent.");
+		}
 
-			Money totalOutgoingAmountNoFee;
-			if (changeHdPubKey is null)
-			{
-				totalOutgoingAmountNoFee = totalSendAmountNoFee;
-			}
-			else
-			{
-				totalOutgoingAmountNoFee = realToSend.Where(x => !changeHdPubKey.ContainsScript(x.destination.ScriptPubKey)).Sum(x => x.amount);
-			}
-			decimal totalOutgoingAmountNoFeeDecimal = totalOutgoingAmountNoFee.ToDecimal(MoneyUnit.BTC);
+		Money totalOutgoingAmountNoFee;
+		if (changeHdPubKey is null)
+		{
+			totalOutgoingAmountNoFee = totalSendAmountNoFee;
+		}
+		else
+		{
+			totalOutgoingAmountNoFee = realToSend.Where(x => !changeHdPubKey.ContainsScript(x.destination.GetScriptPubKey())).Sum(x => x.amount);
+		}
+
+		decimal totalOutgoingAmountNoFeeDecimal = totalOutgoingAmountNoFee.ToDecimal(MoneyUnit.BTC);
+		decimal feeDecimal = fee.ToDecimal(MoneyUnit.BTC);
+
+		decimal feePercentage;
+		if (payments.ChangeStrategy == ChangeStrategy.AllRemainingCustom)
+		{
+			// In this scenario since the amount changes as the fee changes, we need to compare against the total sum / 2,
+			// as with this, we will make sure the fee cannot be higher than the amount.
+			decimal inputSumDecimal = spentCoins.Sum(x => x.Amount.ToDecimal(MoneyUnit.BTC));
+			feePercentage = 100 * (feeDecimal / (inputSumDecimal / 2));
+		}
+		else
+		{
+			// In this scenario the amount is fixed, so we can compare against it.
 			// Cannot divide by zero, so use the closest number we have to zero.
 			decimal totalOutgoingAmountNoFeeDecimalDivisor = totalOutgoingAmountNoFeeDecimal == 0 ? decimal.MinValue : totalOutgoingAmountNoFeeDecimal;
-			decimal feePc = 100 * fee.ToDecimal(MoneyUnit.BTC) / totalOutgoingAmountNoFeeDecimalDivisor;
+			feePercentage = 100 * (feeDecimal / totalOutgoingAmountNoFeeDecimalDivisor);
+		}
+		if (feePercentage > 100 && !parameters.OverrideFeeOverpaymentProtection)
+		{
+			throw new TransactionFeeOverpaymentException(feePercentage);
+		}
 
-			if (feePc > 1)
+		// Build the transaction
+
+		// It must be watch only, too, because if we have the key and also hardware wallet, we do not care we can sign.
+		psbt.AddKeyPaths(KeyManager);
+		psbt.AddPrevTxs(_transactionStore);
+
+		Transaction tx;
+		if (KeyManager.IsWatchOnly || !parameters.TryToSign)
+		{
+			tx = psbt.GetGlobalTransaction();
+		}
+		else
+		{
+			IEnumerable<Key> signingKeys = KeyManager.GetSecrets(_password, spentCoins.Select(x => x.ScriptPubKey).ToArray());
+			builder = builder.AddKeys(signingKeys.ToArray());
+
+			psbt = builder.SolveSilentPayment(psbt);
+			builder.SignPSBT(psbt);
+
+			psbt.Finalize();
+			tx = psbt.ExtractTransaction();
+
+			var checkResults = builder.Check(tx).ToList();
+			if (checkResults.Count > 0)
 			{
-				Logger.LogInfo($"The transaction fee is {feePc:0.#}% of the sent amount.{Environment.NewLine}"
-					+ $"Sending:\t {totalOutgoingAmountNoFee.ToString(fplus: false, trimExcessZero: true)} BTC.{Environment.NewLine}"
-					+ $"Fee:\t\t {fee.Satoshi} Satoshi.");
+				Logger.LogDebug($"Found policy error(s)! First error: '{checkResults[0]}'.");
+				throw new InvalidTxException(tx, checkResults);
 			}
-			if (feePc > 100)
+		}
+
+		var smartTransaction = new SmartTransaction(tx, labels: LabelsArray.Merge(payments.Requests.Select(x => x.Labels)));
+		foreach (var coin in spentCoins)
+		{
+			smartTransaction.TryAddWalletInput(coin);
+		}
+		var label = LabelsArray.Merge(payments.Requests.Select(x => x.Labels).Concat(smartTransaction.WalletInputs.Select(x => x.HdPubKey.Labels)));
+
+		for (var i = 0U; i < tx.Outputs.Count; i++)
+		{
+			TxOut output = tx.Outputs[i];
+			if (KeyManager.TryGetKeyForScriptPubKey(output.ScriptPubKey, out HdPubKey? foundKey))
 			{
-				throw new InvalidOperationException($"The transaction fee is more than twice the sent amount: {feePc:0.#}%.");
+				var smartCoin = new SmartCoin(smartTransaction, i, foundKey);
+				label = LabelsArray.Merge(label, smartCoin.HdPubKey.Labels); // foundKey's label is already added to the coinLabel.
+				smartTransaction.TryAddWalletOutput(smartCoin);
 			}
+		}
 
-			if (spentCoins.Any(u => !u.Confirmed))
+		// New labels will be added to the HdPubKey only when tx will be successfully broadcasted.
+		Dictionary<HdPubKey, LabelsArray> hdPubKeysWithNewLabels = new();
+
+		foreach (var coin in smartTransaction.WalletOutputs)
+		{
+			var foundPaymentRequest = payments.Requests.FirstOrDefault(x => x.Destination.GetScriptPubKey() == coin.ScriptPubKey);
+
+			// If change then we concatenate all the labels.
+			// The foundKeyLabel has already been added previously, so no need to concatenate.
+			if (foundPaymentRequest is null) // Then it's auto-change.
 			{
-				Logger.LogInfo("Unconfirmed transaction is spent.");
-			}
-
-			// Build the transaction
-			Logger.LogInfo("Signing transaction...");
-			// It must be watch only, too, because if we have the key and also hardware wallet, we do not care we can sign.
-
-			psbt.AddPrevTxs(TransactionStore);
-			psbt.AddKeyPaths(KeyManager);
-
-			Transaction tx;
-			if (KeyManager.IsWatchOnly)
-			{
-				tx = psbt.GetGlobalTransaction();
+				hdPubKeysWithNewLabels.Add(coin.HdPubKey, label);
 			}
 			else
 			{
-				IEnumerable<ExtKey> signingKeys = KeyManager.GetSecrets(Password, spentCoins.Select(x => x.ScriptPubKey).ToArray());
-				builder = builder.AddKeys(signingKeys.ToArray());
-				builder.SignPSBT(psbt);
-
-				var isPayjoin = false;
-				// Try to pay using payjoin
-				if (payjoinClient is { })
-				{
-					psbt = TryNegotiatePayjoin(payjoinClient, builder, psbt, changeHdPubKey);
-					isPayjoin = true;
-					psbt.AddPrevTxs(TransactionStore);
-					psbt.AddKeyPaths(KeyManager);
-				}
-
-				psbt.Finalize();
-				tx = psbt.ExtractTransaction();
-
-				var checkResults = builder.Check(tx).ToList();
-				if (!psbt.TryGetEstimatedFeeRate(out FeeRate actualFeeRate))
-				{
-					throw new InvalidOperationException("Impossible to get the fee rate of the PSBT, this should never happen.");
-				}
-
-				if (!isPayjoin)
-				{
-					// Manually check the feerate, because some inaccuracy is possible.
-					var sb1 = feeRate.SatoshiPerByte;
-					var sb2 = actualFeeRate.SatoshiPerByte;
-					if (Math.Abs(sb1 - sb2) > 2) // 2s/b inaccuracy ok.
-					{
-						// So it'll generate a transactionpolicy error thrown below.
-						checkResults.Add(new NotEnoughFundsPolicyError("Fees different than expected"));
-					}
-				}
-				if (checkResults.Count > 0)
-				{
-					throw new InvalidTxException(tx, checkResults);
-				}
+				hdPubKeysWithNewLabels.Add(coin.HdPubKey, LabelsArray.Merge(coin.HdPubKey.Labels, foundPaymentRequest.Labels));
 			}
-
-			var label = SmartLabel.Merge(payments.Requests.Select(x => x.Label).Concat(spentCoins.Select(x => x.Label)));
-			var outerWalletOutputs = new List<SmartCoin>();
-			var innerWalletOutputs = new List<SmartCoin>();
-			for (var i = 0U; i < tx.Outputs.Count; i++)
-			{
-				TxOut output = tx.Outputs[i];
-				var anonset = tx.GetAnonymitySet(i) + spentCoins.Min(x => x.AnonymitySet) - 1; // Minus 1, because count own only once.
-				var foundKey = KeyManager.GetKeyForScriptPubKey(output.ScriptPubKey);
-				var coin = new SmartCoin(tx.GetHash(), i, output.ScriptPubKey, output.Value, tx.Inputs.ToOutPoints().ToArray(), Height.Unknown, tx.RBF, anonset, pubKey: foundKey);
-				label = SmartLabel.Merge(label, coin.Label); // foundKey's label is already added to the coinlabel.
-
-				if (foundKey is null)
-				{
-					outerWalletOutputs.Add(coin);
-				}
-				else
-				{
-					innerWalletOutputs.Add(coin);
-				}
-			}
-
-			foreach (var coin in outerWalletOutputs.Concat(innerWalletOutputs))
-			{
-				var foundPaymentRequest = payments.Requests.FirstOrDefault(x => x.Destination.ScriptPubKey == coin.ScriptPubKey);
-
-				// If change then we concatenate all the labels.
-				if (foundPaymentRequest is null) // Then it's autochange.
-				{
-					coin.Label = label;
-				}
-				else
-				{
-					coin.Label = SmartLabel.Merge(coin.Label, foundPaymentRequest.Label);
-				}
-
-				var foundKey = KeyManager.GetKeyForScriptPubKey(coin.ScriptPubKey);
-				foundKey?.SetLabel(coin.Label); // The foundkeylabel has already been added previously, so no need to concatenate.
-			}
-
-			Logger.LogInfo($"Transaction is successfully built: {tx.GetHash()}.");
-			var sign = !KeyManager.IsWatchOnly;
-			var spendsUnconfirmed = spentCoins.Any(c => !c.Confirmed);
-			SmartTransaction smartTransaction = new SmartTransaction(tx, Height.Unknown, label: SmartLabel.Merge(payments.Requests.Select(x => x.Label)));
-			return new BuildTransactionResult(smartTransaction, psbt, spendsUnconfirmed, sign, fee, feePc, outerWalletOutputs, innerWalletOutputs, spentCoins);
 		}
 
-		private PSBT TryNegotiatePayjoin(IPayjoinClient payjoinClient, TransactionBuilder builder, PSBT psbt, HdPubKey changeHdPubKey)
+		var sign = !KeyManager.IsWatchOnly;
+
+		Logger.LogDebug($"Built tx: {totalOutgoingAmountNoFee.ToString(fplus: false, trimExcessZero: true)} BTC. Fee: {fee.Satoshi} sats. Vsize: {vSize} vBytes. Fee/Total ratio: {feePercentage:0.#}%. Tx hash: {tx.GetHash()}.");
+		return new BuildTransactionResult(smartTransaction, psbt, sign, fee, feePercentage, hdPubKeysWithNewLabels);
+	}
+}
+
+public class TransactionBuilderWithSilentPaymentSupport
+{
+	private readonly Network _network;
+	private readonly TransactionBuilder _builder;
+	private readonly Dictionary<Script, SilentPaymentAddress> _silentPayments = [];
+
+	public TransactionBuilderWithSilentPaymentSupport(Network network)
+	{
+		_network = network;
+		_builder = network.CreateTransactionBuilder();
+		_builder.SetVersion(2);
+		_builder.StandardTransactionPolicy.MinRelayTxFee = Constants.MinRelayFeeRate;
+	}
+	private Key[]? _keys;
+
+	public Func<OutPoint, ICoin>? CoinFinder
+	{
+		set => _builder.CoinFinder = value;
+	}
+
+	public void SetCoinSelector(ICoinSelector coinSelector)
+	{
+		_builder.SetCoinSelector(coinSelector);
+	}
+
+	public void AddCoins(IEnumerable<Coin> coins)
+	{
+		_builder.AddCoins(coins);
+	}
+
+	public void SetLockTime(LockTime lockTime)
+	{
+		_builder.SetLockTime(lockTime);
+	}
+
+	public void Send(Destination destination, Money amount)
+	{
+		switch (destination)
 		{
-			try
-			{
-				Logger.LogInfo($"Negotiating payjoin payment with `{payjoinClient.PaymentUrl}`.");
+			case Destination.Loudly l:
+				_builder.Send(l.ScriptPubKey, amount);
+				break;
 
-				psbt = payjoinClient.RequestPayjoin(psbt,
-					KeyManager.ExtPubKey,
-					new RootedKeyPath(KeyManager.MasterFingerprint.Value, KeyManager.DefaultAccountKeyPath),
-					changeHdPubKey,
-					CancellationToken.None).GetAwaiter().GetResult(); // WTF??!
-				builder.SignPSBT(psbt);
-
-				Logger.LogInfo($"Payjoin payment was negotiated successfully.");
-			}
-			catch (TorSocks5FailureResponseException e)
-			{
-				if (e.Message.Contains("HostUnreachable"))
+			case Destination.Silent s:
 				{
-					Logger.LogWarning($"Payjoin server is not reachable. Ignoring...");
+					_builder.Send(s.FakeScriptPubKey, amount);
+					_silentPayments.Add(s.FakeScriptPubKey, s.Address);
+					break;
 				}
-				// ignore
-			}
-			catch (HttpRequestException e)
-			{
-				Logger.LogWarning($"Payjoin server responded with {e.ToTypeMessageString()}. Ignoring...");
-			}
-			catch (PayjoinException e)
-			{
-				Logger.LogWarning($"Payjoin server responded with {e.Message}. Ignoring...");
-			}
+		}
+	}
 
+	public void SubtractFees()
+	{
+		_builder.SubtractFees();
+	}
+
+	public void SetChange(Destination destination)
+	{
+		switch (destination)
+		{
+			case Destination.Loudly l:
+				_builder.SetChange(l.ScriptPubKey);
+				break;
+
+			case Destination.Silent s:
+				{
+					_builder.SetChange(s.FakeScriptPubKey);
+					_silentPayments.Add(s.FakeScriptPubKey, s.Address);
+					break;
+				}
+		}
+	}
+
+	public void SendAllRemaining(Destination destination)
+	{
+		switch (destination)
+		{
+			case Destination.Loudly l:
+				_builder.SendAllRemaining(l.ScriptPubKey);
+				break;
+
+			case Destination.Silent s:
+				{
+					_builder.SendAllRemaining(s.FakeScriptPubKey);
+					_silentPayments.Add(s.FakeScriptPubKey, s.Address);
+					break;
+				}
+		}
+	}
+
+	public void SendEstimatedFees(FeeRate feeRate)
+	{
+		_builder.SendEstimatedFees(feeRate);
+	}
+
+
+	public PSBT BuildPSBT(bool sign)
+	{
+		return _builder.BuildPSBT(sign);
+	}
+
+	public int EstimateSize(Transaction tx, bool virtualSize)
+	{
+		return _builder.EstimateSize(tx, virtualSize);
+	}
+
+	public TransactionBuilderWithSilentPaymentSupport AddKeys(Key[] keys)
+	{
+		_keys = keys;
+		_builder.AddKeys(keys);
+		return this;
+	}
+
+	public void SignPSBT(PSBT psbt)
+	{
+		_builder.SignPSBT(psbt);
+	}
+
+	public TransactionPolicyError[] Check(Transaction tx)
+	{
+		return _builder.Check(tx);
+	}
+
+	public PSBT SolveSilentPayment(PSBT psbt)
+	{
+		if (_silentPayments.Count == 0)
+		{
 			return psbt;
 		}
+
+		var keys = _keys ?? [];
+
+		Key GetKeyForScriptPubKey(Script spk)
+		{
+			foreach (var key in keys)
+			{
+				if (key.PubKey.GetScriptPubKey(ScriptPubKeyType.TaprootBIP86) == spk)
+				{
+					return key.Tweak();
+				}
+				if (key.PubKey.GetScriptPubKey(ScriptPubKeyType.Segwit) == spk)
+				{
+					return key;
+				}
+			}
+
+			throw new InvalidOperationException("Key not found for script pub key");
+		}
+
+		var spentCoins = psbt.Inputs
+			.Select(x => x.GetCoin())
+			.DropNulls()
+			.Select(x => new Utxo(x.Outpoint, GetKeyForScriptPubKey(x.ScriptPubKey), x.ScriptPubKey))
+			.ToArray();
+		var paymentAddresses = _silentPayments.Select(x => x.Value);
+		var scriptPubKeys = SilentPayment
+			.GetPubKeys(paymentAddresses, spentCoins)
+			.Select(x => (SilentPaymentAddress: x.Key, SilentPaymentPubKey: x.Value.First()))
+			.Select(x => (x.SilentPaymentAddress, TaprootPubKey: new TaprootPubKey(x.SilentPaymentPubKey.ToBytes())))
+			.ToDictionary(x => x.SilentPaymentAddress, x => x.TaprootPubKey.ScriptPubKey);
+
+		var tx = psbt.GetGlobalTransaction();
+		foreach (var output in tx.Outputs)
+		{
+			if (_silentPayments.TryGetValue(output.ScriptPubKey, out var silentPaymentAddress))
+			{
+				output.ScriptPubKey = scriptPubKeys[silentPaymentAddress];
+			}
+		}
+
+		var newPsbt = tx.CreatePSBT(_network);
+
+		foreach (var (newInput, oldInput) in newPsbt.Inputs.Zip(psbt.Inputs))
+		{
+			newInput.UpdateFrom(oldInput);
+		}
+		return newPsbt;
 	}
 }

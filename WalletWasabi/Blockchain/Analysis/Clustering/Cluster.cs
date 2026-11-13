@@ -1,118 +1,71 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using WalletWasabi.Bases;
-using WalletWasabi.Blockchain.TransactionOutputs;
+namespace WalletWasabi.Blockchain.Analysis.Clustering;
 
-namespace WalletWasabi.Blockchain.Analysis.Clustering
+public class Cluster(ImmutableHashSet<HdPubKey> keys) : IEquatable<Cluster>
 {
-	public class Cluster : NotifyPropertyChangedBase, IEquatable<Cluster>
+	private readonly Lock _lock = new();
+	public LabelsArray Labels => LabelsArray.Merge(GetKeys().Select(x => x.Labels));
+
+	private ImmutableHashSet<HdPubKey> _keys = keys;
+
+	private ImmutableHashSet<HdPubKey> GetKeys()
 	{
-		private SmartLabel _labels;
-
-		public Cluster(params SmartCoin[] coins)
-			: this(coins as IEnumerable<SmartCoin>)
+		lock (_lock)
 		{
+			return _keys;
+		}
+	}
+
+	public void Merge(Cluster cluster)
+	{
+		// Read the other cluster's keys before taking our lock so the two locks are never nested.
+		var otherClusterKeys = cluster.GetKeys();
+
+		lock (_lock)
+		{
+			_keys = _keys.Union(otherClusterKeys);
 		}
 
-		public Cluster(IEnumerable<SmartCoin> coins)
+		foreach (var key in otherClusterKeys)
 		{
-			Lock = new object();
-			Coins = coins.ToList();
-			CoinsSet = Coins.ToHashSet();
-			_labels = SmartLabel.Merge(Coins.Select(x => x.Label));
+			key.Cluster = this;
+		}
+	}
+
+	public override string ToString() => Labels;
+
+	public override bool Equals(object? obj) => Equals(obj as Cluster);
+	public bool Equals(Cluster? other)
+	{
+		if (ReferenceEquals(this, other))
+		{
+			return true;
 		}
 
-		public SmartLabel Labels
+		if (other is null)
 		{
-			get => _labels;
-			private set => RaiseAndSetIfChanged(ref _labels, value);
+			return false;
 		}
 
-		public int Size => Coins.Count;
+		// Not `SetEquals`: on .NET 10 it copies the other set into a new `HashSet` on every call.
+		var mine = GetKeys();
+		var theirs = other.GetKeys();
+		return mine.Count == theirs.Count && mine.IsSupersetOf(theirs);
+	}
 
-		private object Lock { get; }
-		private List<SmartCoin> Coins { get; set; }
-		private HashSet<SmartCoin> CoinsSet { get; set; }
+	public static bool operator ==(Cluster? x, Cluster? y) => x?.Equals(y) ?? y is null;
 
-		public void Merge(Cluster cluster) => Merge(cluster.Coins);
+	public static bool operator !=(Cluster? x, Cluster? y) => !(x == y);
 
-		public void Merge(IEnumerable<SmartCoin> coins)
+	/// <remarks>Hash code is computed for a set. Therefore, an order-independent hash function must be used (e.g. XOR).</remarks>
+	public override int GetHashCode()
+	{
+		int hash = 0;
+
+		foreach (var key in GetKeys())
 		{
-			lock (Lock)
-			{
-				var insertPosition = 0;
-				foreach (var coin in coins.ToList())
-				{
-					if (CoinsSet.Add(coin))
-					{
-						Coins.Insert(insertPosition++, coin);
-					}
-					coin.Cluster = this;
-				}
-				if (insertPosition > 0) // at least one element was inserted
-				{
-					Labels = SmartLabel.Merge(Coins.Select(x => x.Label));
-				}
-			}
+			hash ^= key.GetHashCode();
 		}
 
-		public IEnumerable<SmartCoin> GetCoins()
-		{
-			lock (Lock)
-			{
-				return Coins.ToList();
-			}
-		}
-
-		#region EqualityAndComparison
-
-		public override bool Equals(object? obj) => Equals(obj as Cluster);
-
-		public bool Equals(Cluster? other) => this == other;
-
-		public override int GetHashCode()
-		{
-			lock (Lock)
-			{
-				int hash = 0;
-				if (Coins is { })
-				{
-					foreach (var coin in Coins)
-					{
-						hash ^= coin.GetHashCode();
-					}
-				}
-				return hash;
-			}
-		}
-
-		public static bool operator ==(Cluster? x, Cluster? y)
-		{
-			if (ReferenceEquals(x, y))
-			{
-				return true;
-			}
-			else if (x is null || y is null)
-			{
-				return false;
-			}
-			else
-			{
-				lock (x.Lock)
-				{
-					lock (y.Lock)
-					{
-						// We lose the order here, which isn't great and may cause problems,
-						// but this is also a significant perfomance gain.
-						return x.CoinsSet.SetEquals(y.CoinsSet);
-					}
-				}
-			}
-		}
-
-		public static bool operator !=(Cluster? x, Cluster? y) => !(x == y);
-
-		#endregion EqualityAndComparison
+		return hash;
 	}
 }

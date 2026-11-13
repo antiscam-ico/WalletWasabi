@@ -1,42 +1,24 @@
-using System;
-using System.Collections.Generic;
 using NBitcoin;
-using WalletWasabi.Models;
+using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 
-namespace WalletWasabi.Blockchain.TransactionOutputs
+namespace WalletWasabi.Blockchain.TransactionOutputs;
+
+public interface ICoinsView : IEnumerable<SmartCoin>
 {
-	public interface ICoinsView : IEnumerable<SmartCoin>
-	{
-		ICoinsView AtBlockHeight(Height height);
+	ICoinsView Available();
 
-		ICoinsView Available();
+	ICoinsView Confirmed();
 
-		ICoinsView ChildrenOf(SmartCoin coin);
+	ICoinsView CreatedBy(uint256 txid);
 
-		ICoinsView CoinJoinInProcess();
+	ICoinsView SpentBy(uint256 txid);
 
-		ICoinsView Confirmed();
+	Money TotalAmount();
 
-		ICoinsView DescendantOf(SmartCoin coin);
+	ICoinsView Unconfirmed();
 
-		ICoinsView DescendantOfAndSelf(SmartCoin coin);
+	ICoinsView Unspent();
 
-		ICoinsView FilterBy(Func<SmartCoin, bool> expression);
-
-		ICoinsView OutPoints(IEnumerable<OutPoint> outPoints);
-
-		ICoinsView CreatedBy(uint256 txid);
-
-		ICoinsView SpentBy(uint256 txid);
-
-		SmartCoin[] ToArray();
-
-		Money TotalAmount();
-
-		ICoinsView Unconfirmed();
-
-		ICoinsView Unspent();
-
-		SmartCoin GetByOutPoint(OutPoint outpoint);
-	}
+	bool TryGetByOutPoint(OutPoint outpoint, [NotNullWhen(true)] out SmartCoin? coin);
 }

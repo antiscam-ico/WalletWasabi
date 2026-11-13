@@ -1,49 +1,51 @@
-using System.Collections.Generic;
+using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
-using WalletWasabi.Backend.Models;
-using WalletWasabi.WebClients.BlockchainInfo;
-using WalletWasabi.WebClients.Coinbase;
-using WalletWasabi.WebClients.CoinGecko;
-using WalletWasabi.WebClients.Bitstamp;
-using WalletWasabi.WebClients.Gemini;
-using WalletWasabi.WebClients.ItBit;
+using WalletWasabi.Client.Wallets.Exchange;
+using WalletWasabi.FeeRateEstimation;
+using WalletWasabi.WebClients.Wasabi;
 using Xunit;
-using WalletWasabi.Interfaces;
 
-namespace WalletWasabi.Tests.IntegrationTests
+namespace WalletWasabi.Tests.IntegrationTests;
+
+public class ExternalApiTests
 {
-	public class ExternalApiTests
+	[Fact(Timeout = 180_000)]
+	public async Task MempoolSpaceExchangeRateProviderTestsAsync() =>
+		await AssertExchangeRateProviderAsync(ExchangeRateProviders.MempoolSpaceAsync, TestContext.Current.CancellationToken);
+
+	[Fact(Timeout = 180_000)]
+	public async Task BlockchainInfoExchangeRateProviderTestsAsync() =>
+		await AssertExchangeRateProviderAsync(ExchangeRateProviders.BlockchainInfoAsync, TestContext.Current.CancellationToken);
+
+	[Fact(Timeout = 180_000)]
+	public async Task CoinGeckoExchangeRateProviderTestsAsync() =>
+		await AssertExchangeRateProviderAsync(ExchangeRateProviders.CoinGeckoAsync, TestContext.Current.CancellationToken);
+
+	[Fact(Timeout = 180_000)]
+	public async Task GeminiExchangeRateProviderTestsAsync() =>
+		await AssertExchangeRateProviderAsync(ExchangeRateProviders.GeminiAsync, TestContext.Current.CancellationToken);
+
+	private async Task AssertExchangeRateProviderAsync(Func<ExchangeRateHttpFetcher, ExchangeRateProvider> providerFactory, CancellationToken cancellationToken)
 	{
-		[Fact]
-		public async Task CoinbaseExchangeRateProviderTestsAsync() =>
-			await AssertProviderAsync(new CoinbaseExchangeRateProvider());
+		var httpFetcher = ExchangeRateProviders.FetcherFactory(new HttpClientFactory());
+		var provider = providerFactory(httpFetcher);
+		var exchangeRates = await provider(cancellationToken).ConfigureAwait(false);
+		Assert.All(exchangeRates, x => Assert.True(x.Rate > 0));
+	}
 
-		[Fact]
-		public async Task BlockchainInfoExchangeRateProviderTestsAsync() =>
-			await AssertProviderAsync(new BlockchainInfoExchangeRateProvider());
+	[Fact(Timeout = 180_000)]
+	public async Task BlockstreamFeeRateProviderTestsAsync() =>
+		await AssertFeeProviderAsync(FeeRateProviders.BlockstreamAsync, TestContext.Current.CancellationToken);
 
-		[Fact]
-		public async Task CoinGeckoExchangeRateProviderTestsAsync() =>
-			await AssertProviderAsync(new CoinGeckoExchangeRateProvider());
+	[Fact(Timeout = 180_000)]
+	public async Task MempoolSpaceRateProviderTestsAsync() =>
+		await AssertFeeProviderAsync(FeeRateProviders.MempoolSpaceAsync, TestContext.Current.CancellationToken);
 
-		[Fact]
-		public async Task BitstampExchangeRateProviderTestsAsync() =>
-			await AssertProviderAsync(new BitstampExchangeRateProvider());
-
-		[Fact]
-		public async Task GeminiExchangeRateProviderTestsAsync() =>
-			await AssertProviderAsync(new GeminiExchangeRateProvider());
-
-		[Fact]
-		public async Task ItBitExchangeRateProviderTestsAsync() =>
-			await AssertProviderAsync(new ItBitExchangeRateProvider());
-
-		private async Task AssertProviderAsync(IExchangeRateProvider provider)
-		{
-			IEnumerable<ExchangeRate> rates = await provider.GetExchangeRateAsync();
-
-			var usdRate = Assert.Single(rates, x => x.Ticker == "USD");
-			Assert.NotEqual(0.0m, usdRate.Rate);
-		}
+	private async Task AssertFeeProviderAsync(Func<IHttpClientFactory, FeeRateProvider> providerFactory, CancellationToken cancellationToken)
+	{
+		var provider = providerFactory(new HttpClientFactory());
+		var estimations = await provider(cancellationToken).ConfigureAwait(false);
+		Assert.NotEmpty(estimations.Estimations);
 	}
 }

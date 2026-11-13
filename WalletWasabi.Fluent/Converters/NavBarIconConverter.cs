@@ -1,35 +1,33 @@
 using Avalonia;
 using Avalonia.Data.Converters;
-using System;
 using System.Globalization;
-using WalletWasabi.Fluent.ViewModels;
+using Avalonia.Media;
 
-namespace WalletWasabi.Fluent.Converters
+namespace WalletWasabi.Fluent.Converters;
+
+public class NavBarIconConverter : IValueConverter
 {
-	public class NavBarIconConverter : IValueConverter
+	public static readonly NavBarIconConverter Instance = new();
+
+	private NavBarIconConverter()
 	{
-		public static readonly NavBarIconConverter Instance = new NavBarIconConverter();
+	}
 
-		private NavBarIconConverter()
+	object IValueConverter.Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+	{
+		if (Application.Current is { } && value is string iconName)
 		{
-		}
-
-		object IValueConverter.Convert(object value, Type targetType, object parameter, CultureInfo culture)
-		{
-			if (value is NavBarItemViewModel nvivm)
+			if (Application.Current.Styles.TryGetResource(iconName, null, out object? resource))
 			{
-				if (Application.Current.Styles.TryGetResource(nvivm.IconName, out object resource))
-				{
-					return resource;
-				}
+				return resource is not StreamGeometry ? AvaloniaProperty.UnsetValue : resource;
 			}
-
-			return null;
 		}
 
-		object IValueConverter.ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
-		{
-			throw new NotImplementedException();
-		}
+		return AvaloniaProperty.UnsetValue;
+	}
+
+	object IValueConverter.ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+	{
+		throw new NotImplementedException();
 	}
 }
